@@ -6,6 +6,7 @@ import re
 from tqdm import tqdm
 import torch
 from concurrent.futures import ThreadPoolExecutor
+import argparse
  
 
 if torch.version.cuda == '11.8':
@@ -14,7 +15,7 @@ os.environ['VLLM_USE_V1'] = '0'
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 
-from config import MODEL_PATH, INPUT_PATH, OUTPUT_PATH, PROMPT, SKIP_REPEAT, MAX_CONCURRENCY, NUM_WORKERS, CROP_MODE
+from config import MODEL_PATH, PROMPT, SKIP_REPEAT, MAX_CONCURRENCY, NUM_WORKERS, CROP_MODE
 
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
@@ -231,6 +232,29 @@ def process_single_image(image):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Run OCR pipeline on PDF input."
+    )
+
+    parser.add_argument(
+        "--input_path",
+        type=str,
+        required=True,
+        help="Path to input PDF file"
+    )
+
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        required=True,
+        help="Directory for output files"
+    )
+
+    args = parser.parse_args()
+
+    # Override variables from args
+    INPUT_PATH = args.input_path
+    OUTPUT_PATH = args.output_path
 
     os.makedirs(OUTPUT_PATH, exist_ok=True)
     os.makedirs(f'{OUTPUT_PATH}/images', exist_ok=True)
