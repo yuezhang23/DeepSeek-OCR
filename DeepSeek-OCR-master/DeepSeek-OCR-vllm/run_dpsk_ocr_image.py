@@ -1,6 +1,7 @@
 import asyncio
 import re
 import os
+import argparse
 
 import torch
 if torch.version.cuda == '11.8':
@@ -19,7 +20,7 @@ import numpy as np
 from tqdm import tqdm
 from process.ngram_norepeat import NoRepeatNGramLogitsProcessor
 from process.image_process import DeepseekOCRProcessor
-from config import MODEL_PATH, INPUT_PATH, OUTPUT_PATH, PROMPT, CROP_MODE
+from config import MODEL_PATH, PROMPT, CROP_MODE
 
 
 
@@ -202,6 +203,29 @@ async def stream_generate(image=None, prompt=''):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Run OCR pipeline on PDF input."
+    )
+
+    parser.add_argument(
+        "--input_path",
+        type=str,
+        required=True,
+        help="Path to input PDF file"
+    )
+
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        required=True,
+        help="Directory for output files"
+    )
+
+    args = parser.parse_args()
+
+    # Override variables from args
+    INPUT_PATH = args.input_path
+    OUTPUT_PATH = args.output_path
 
     os.makedirs(OUTPUT_PATH, exist_ok=True)
     os.makedirs(f'{OUTPUT_PATH}/images', exist_ok=True)
