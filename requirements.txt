@@ -7,3 +7,18 @@ easydict
 addict 
 Pillow
 numpy
+
+
+
+# Required API keys
+# Optional overrides
+CLAUDE_MODEL=claude-sonnet-4-6
+OCR_MODEL_NAME=deepseek-ai/DeepSeek-OCR-2
+OCR_DTYPE=bfloat16
+REVIEWER_CACHE_DIR=/tmp/paper_reviewer_cache
+TOP_K_PAPERS=12
+MAX_FULL_TEXT_PAPERS=5
+MAX_TAVILY_RESULTS=5
+NUM_SEARCH_QUERIES=12
+DEFAULT_VENUE=ICLR
+
