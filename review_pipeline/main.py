@@ -178,7 +178,11 @@ def run_pipeline(
     if output_path is None:
         output_path = pdf_path.parent / f"{paper_stem}_review_{venue.lower()}.md"
     else:
-        output_path = Path(output_path + "/review_c.md")
+        output_path = Path(output_path)
+        if (output_path.exists() and output_path.is_dir()) or output_path.suffix == "":
+            output_path = output_path / "review_c.md"
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     output_path.write_text(review_md, encoding="utf-8")
     print(f"\nReview written to: {output_path}")
