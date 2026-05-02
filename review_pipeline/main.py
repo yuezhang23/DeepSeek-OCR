@@ -50,9 +50,9 @@ def run_pipeline(
     markdown_path: Path | None = None,
 ) -> str:
     """Execute all pipeline stages with per-stage caching. Returns review file path."""
-    from paper_reviewer import config
-    from paper_reviewer.cache import StageCache
-    from paper_reviewer import ocr, query_gen, search, arxiv_client, relevance, summarizer, reviewer
+    from review_pipeline import config
+    from review_pipeline.cache import StageCache
+    from review_pipeline import ocr, query_gen, search, arxiv_client, relevance, summarizer, reviewer
 
     import anthropic
     from tavily import TavilyClient

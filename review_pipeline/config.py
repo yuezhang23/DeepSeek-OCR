@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Required API keys — raise immediately if missing
-ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
-TAVILY_API_KEY: str = os.environ["TAVILY_API_KEY"]
+# ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
+# TAVILY_API_KEY: str = os.environ["TAVILY_API_KEY"]
 
 # Model settings
 CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
