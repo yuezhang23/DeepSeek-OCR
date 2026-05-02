@@ -86,7 +86,7 @@ def run_pipeline(
     # ── Stage 2: OCR ────────────────────────────────────────────────────────────
     if markdown_path is not None:
         print(f"\n[Stage 2/9] Using provided markdown file: {markdown_path}")
-        with open('/content/drive/MyDrive/ocr/output/pdf2md/4.pdf/4.mmd', 'r') as f:
+        with open(markdown_path, 'r') as f:
             paper_md = f.read()
         cache.save("ocr", paper_md)
     elif force_rerun or not cache.exists("ocr"):
@@ -204,7 +204,7 @@ def main():
         output_path=Path(args.output) if args.output else None,
         force_rerun=args.force_rerun,
         skip_ocr_related=args.skip_ocr_related,
-        markdown_path=markdown_path,
+        markdown_path=Path(args.markdown) if args.markdown else None,
         anthropic_api_key=args.anthropic_api_key,
         tavily_api_key=args.tavily_api_key,
     )
