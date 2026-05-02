@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate an ICLR-style peer review for a research paper PDF."
     )
-    parser.add_argument("--pdf", required=True, help="Path to the input paper PDF.")
+    parser.add_argument("--pdf", help="Path to the input paper PDF.")
     parser.add_argument("--venue", default="ICLR", help="Target venue (default: ICLR).")
     parser.add_argument("--output", default=None, help="Output path for the review markdown.")
     parser.add_argument(
