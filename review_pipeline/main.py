@@ -51,7 +51,7 @@ def run_pipeline(
 ) -> str:
     """Execute all pipeline stages with per-stage caching. Returns review file path."""
     # ensure review_pipeline is on the path for imports
-    sys.path.append(str(Path(__file__).parent))
+    sys.path.insert(0, str(Path(__file__).parent.parent))
     
     from review_pipeline import config
     from review_pipeline.cache import StageCache
@@ -62,6 +62,10 @@ def run_pipeline(
 
     claude = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     tavily = TavilyClient(api_key=config.TAVILY_API_KEY)
+
+    # Initialize cache object before using it
+    paper_stem = pdf_path.stem
+    cache = StageCache(paper_stem, config.CACHE_DIR)
 
     # ── Stage 2: OCR ────────────────────────────────────────────────────────────
     if markdown_path is not None:
@@ -75,8 +79,6 @@ def run_pipeline(
         cache.save("ocr", paper_md)
         print(f"  Saved markdown ({len(paper_md):,} chars)")
     else:
-        paper_stem = pdf_path.stem
-        cache = StageCache(paper_stem, config.CACHE_DIR)
         print("\n[Stage 2/9] OCR cache hit — loading existing markdown.")
         paper_md = cache.load("ocr")
 
