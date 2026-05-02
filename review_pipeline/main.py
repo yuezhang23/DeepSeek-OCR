@@ -165,9 +165,6 @@ def main():
     args = parse_args()
     pdf_path = Path(args.pdf)
 
-    if not pdf_path.exists():
-        print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
-        sys.exit(1)
 
     markdown_path = None
     if args.markdown:
@@ -175,6 +172,9 @@ def main():
         if not markdown_path.exists():
             print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
             sys.exit(1)
+    elif not pdf_path.exists():
+        print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
+        sys.exit(1)
 
     output = run_pipeline(
         pdf_path=pdf_path,
