@@ -10,10 +10,10 @@ from typing import Literal, Optional, TypedDict
 
 import anthropic
 
-from paper_reviewer import config
-from paper_reviewer.arxiv_client import PaperMetadata, download_pdf
-from paper_reviewer.ocr import convert_pdf_to_markdown
-from paper_reviewer.relevance import RelevanceScore
+from review_pipeline import config
+from review_pipeline.arxiv_client import PaperMetadata, download_pdf
+from review_pipeline.ocr import convert_pdf_to_markdown
+from review_pipeline.relevance import RelevanceScore
 
 logger = logging.getLogger(__name__)
 

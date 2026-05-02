@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 import anthropic
-from paper_reviewer import config
+from review_pipeline import config
 
 _SYSTEM_PREAMBLE = """\
 You are an expert academic paper analyst helping to ground a paper review in prior work.

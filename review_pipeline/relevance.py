@@ -10,8 +10,8 @@ from typing import Optional, TypedDict
 
 import anthropic
 
-from paper_reviewer import config
-from paper_reviewer.arxiv_client import PaperMetadata
+from review_pipeline import config
+from review_pipeline.arxiv_client import PaperMetadata
 
 _SYSTEM_PREAMBLE = """\
 You are an expert academic paper reviewer. You will be given the full text of a \

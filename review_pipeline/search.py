@@ -9,7 +9,7 @@ import logging
 from typing import Optional
 from tavily import TavilyClient
 
-from paper_reviewer import config
+from review_pipeline import config
 
 logger = logging.getLogger(__name__)
 

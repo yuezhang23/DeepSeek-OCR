@@ -11,8 +11,8 @@ from typing import Optional, TypedDict
 
 import anthropic
 
-from paper_reviewer import config
-from paper_reviewer.summarizer import PaperSummary
+from review_pipeline import config
+from review_pipeline.summarizer import PaperSummary
 
 RATING_LABELS = {
     1: "Strong Reject",
