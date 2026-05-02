@@ -175,8 +175,9 @@ def run_pipeline(
     )
     cache.save("review", review_md)
 
-    if output_path is None:
-        output_path = pdf_path.parent / f"{paper_stem}_review_{venue.lower()}.md"
+    # if output_path is None, create this path to write the review to: <pdf_stem>/final_review.md
+    # if output_path is None:
+    #     output_path = Path(pdf_path.parent) / paper_stem / "final_review.md"
 
     output_path.write_text(review_md, encoding="utf-8")
     print(f"\nReview written to: {output_path}")
