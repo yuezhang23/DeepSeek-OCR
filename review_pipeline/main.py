@@ -50,6 +50,9 @@ def run_pipeline(
     markdown_path: Path | None = None,
 ) -> str:
     """Execute all pipeline stages with per-stage caching. Returns review file path."""
+    # ensure review_pipeline is on the path for imports
+    sys.path.append(str(Path(__file__).parent))
+    
     from review_pipeline import config
     from review_pipeline.cache import StageCache
     from review_pipeline import ocr, query_gen, search, arxiv_client, relevance, summarizer, reviewer
