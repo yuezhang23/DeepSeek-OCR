@@ -86,7 +86,7 @@ def run_pipeline(
     # ── Stage 2: OCR ────────────────────────────────────────────────────────────
     if markdown_path is not None:
         print(f"\n[Stage 2/9] Using provided markdown file: {markdown_path}")
-        with open(markdown_path, 'r') as f:
+        with open({markdown_path}, 'r') as f:
             paper_md = f.read()
         cache.save("ocr", paper_md)
     elif force_rerun or not cache.exists("ocr"):
