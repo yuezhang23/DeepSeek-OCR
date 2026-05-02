@@ -57,8 +57,6 @@ def run_pipeline(
     import anthropic
     from tavily import TavilyClient
 
-    paper_stem = pdf_path.stem
-    cache = StageCache(paper_stem, config.CACHE_DIR)
     claude = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     tavily = TavilyClient(api_key=config.TAVILY_API_KEY)
 
@@ -73,6 +71,8 @@ def run_pipeline(
         cache.save("ocr", paper_md)
         print(f"  Saved markdown ({len(paper_md):,} chars)")
     else:
+        paper_stem = pdf_path.stem
+        cache = StageCache(paper_stem, config.CACHE_DIR)
         print("\n[Stage 2/9] OCR cache hit — loading existing markdown.")
         paper_md = cache.load("ocr")
 
