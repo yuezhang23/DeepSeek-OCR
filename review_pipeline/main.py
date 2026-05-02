@@ -63,7 +63,8 @@ def run_pipeline(
     # ── Stage 2: OCR ────────────────────────────────────────────────────────────
     if markdown_path is not None:
         print(f"\n[Stage 2/9] Using provided markdown file: {markdown_path}")
-        paper_md = markdown_path.read_text(encoding="utf-8")
+        with open(markdown_path, 'r') as f:
+            paper_md = f.read()
         cache.save("ocr", paper_md)
     elif force_rerun or not cache.exists("ocr"):
         print("\n[Stage 2/9] Converting PDF to Markdown (DeepSeek OCR-2)...")
@@ -169,9 +170,9 @@ def main():
     markdown_path = None
     if args.markdown:
         markdown_path = Path(args.markdown)
-        if not markdown_path.exists():
-            print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
-            sys.exit(1)
+        # if not markdown_path.exists():
+        #     print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
+        #     sys.exit(1)
     elif not pdf_path.exists():
         print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
         sys.exit(1)
