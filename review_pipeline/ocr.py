@@ -14,7 +14,8 @@ from typing import Optional
 
 from tqdm import tqdm
 
-from paper_reviewer import config
+
+from review_pipeline import config
 
 _MODEL_CACHE: dict = {}  # {model_name: (tokenizer, model)}
 
