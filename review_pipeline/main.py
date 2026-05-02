@@ -38,6 +38,16 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to an existing .mmd markdown file for the paper. Skips OCR entirely.",
     )
+    parser.add_argument(
+        "--anthropic-api-key",
+        default=None,
+        help="Anthropic API key (defaults to ANTHROPIC_API_KEY env var or config.py).",
+    )
+    parser.add_argument(
+        "--tavily-api-key",
+        default=None,
+        help="Tavily API key (defaults to TAVILY_API_KEY env var or config.py).",
+    )
     return parser.parse_args()
 
 
@@ -48,6 +58,8 @@ def run_pipeline(
     force_rerun: bool = False,
     skip_ocr_related: bool = False,
     markdown_path: Path | None = None,
+    anthropic_api_key: str | None = None,
+    tavily_api_key: str | None = None,
 ) -> str:
     """Execute all pipeline stages with per-stage caching. Returns review file path."""
     # ensure review_pipeline is on the path for imports
@@ -60,8 +72,12 @@ def run_pipeline(
     import anthropic
     from tavily import TavilyClient
 
-    claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    tavily = TavilyClient(api_key=TAVILY_API_KEY)
+    # Use provided API keys or fall back to config
+    anthropic_key = anthropic_api_key or config.ANTHROPIC_API_KEY
+    tavily_key = tavily_api_key or config.TAVILY_API_KEY
+
+    claude = anthropic.Anthropic(api_key=anthropic_key)
+    tavily = TavilyClient(api_key=tavily_key)
 
     # Initialize cache object before using it
     paper_stem = pdf_path.stem
@@ -189,6 +205,8 @@ def main():
         force_rerun=args.force_rerun,
         skip_ocr_related=args.skip_ocr_related,
         markdown_path=markdown_path,
+        anthropic_api_key=args.anthropic_api_key,
+        tavily_api_key=args.tavily_api_key,
     )
     print(f"\nDone. Review saved to: {output}")
 
