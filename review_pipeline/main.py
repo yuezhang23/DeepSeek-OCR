@@ -60,8 +60,8 @@ def run_pipeline(
     import anthropic
     from tavily import TavilyClient
 
-    claude = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    tavily = TavilyClient(api_key=config.TAVILY_API_KEY)
+    claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
     # Initialize cache object before using it
     paper_stem = pdf_path.stem
