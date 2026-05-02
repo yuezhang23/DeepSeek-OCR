@@ -26,7 +26,7 @@ def run_searches(
     Each result dict has keys: url, title, content, score, query.
     """
     max_results_per_query = max_results_per_query or config.MAX_TAVILY_RESULTS
-    client = client or TavilyClient(api_key=config.TAVILY_API_KEY)
+    client = client or TavilyClient(api_key=TAVILY_API_KEY)
 
     seen_urls: set[str] = set()
     results: list[dict] = []

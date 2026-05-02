@@ -62,7 +62,7 @@ def generate_search_queries(
     and related-technique queries. All queries are phrased to target arXiv.
     Uses prompt caching on the paper markdown.
     """
-    client = client or anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    client = client or anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     per_bucket = max(3, num_queries // 3)
     user_message = (
