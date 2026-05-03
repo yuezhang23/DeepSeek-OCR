@@ -14,15 +14,9 @@ DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
 CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
 DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-OCR_MODEL_NAME: str = os.getenv("OCR_MODEL_NAME", "deepseek-ai/DeepSeek-OCR")
-OCR_DTYPE: str = os.getenv("OCR_DTYPE", "bfloat16")
 
 # Paths
 CACHE_DIR: Path = Path(os.getenv("REVIEWER_CACHE_DIR", "/tmp/paper_reviewer_cache"))
-HF_OCR_DIR: Path = (
-    Path(__file__).parent.parent
-    / "DeepSeek-OCR-2/DeepSeek-OCR2-master/DeepSeek-OCR2-hf"
-)
 
 # Pipeline tuning
 NUM_SEARCH_QUERIES: int = int(os.getenv("NUM_SEARCH_QUERIES", "12"))

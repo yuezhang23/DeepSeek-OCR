@@ -104,7 +104,8 @@ def run_pipeline(
         cache.save("ocr", paper_md)
     elif force_rerun or not cache.exists("ocr"):
         print("\n[Stage 2/9] Converting PDF to Markdown (DeepSeek OCR-2)...")
-        paper_md = ocr.convert_pdf_to_markdown(pdf_path)
+        ocr_output_path = pdf_path.parent / f"{cache_key}_ocr_output"
+        paper_md, dest_path = ocr.convert_pdf_to_markdown(paper_id, pdf_path, ocr_output_path)
         cache.save("ocr", paper_md)
         print(f"  Saved markdown ({len(paper_md):,} chars)")
     else:

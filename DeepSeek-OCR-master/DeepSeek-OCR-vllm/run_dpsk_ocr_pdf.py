@@ -223,7 +223,7 @@ def process_image_with_refs(image, ref_texts, jdx):
 
 def process_single_image(image):
     """single image"""
-    prompt_in = prompt
+    prompt_in = PROMPT
     cache_item = {
         "prompt": prompt_in,
         "multi_modal_data": {"image": DeepseekOCRProcessor().tokenize_with_images(images = [image], bos=True, eos=True, cropping=CROP_MODE)},
@@ -231,38 +231,14 @@ def process_single_image(image):
     return cache_item
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Run OCR pipeline on PDF input."
-    )
-
-    parser.add_argument(
-        "--input_path",
-        type=str,
-        required=True,
-        help="Path to input PDF file"
-    )
-
-    parser.add_argument(
-        "--output_path",
-        type=str,
-        required=True,
-        help="Directory for output files"
-    )
-
-    args = parser.parse_args()
-
-    # Override variables from args
-    INPUT_PATH = args.input_path
-    OUTPUT_PATH = args.output_path
-
-    os.makedirs(OUTPUT_PATH, exist_ok=True)
-    os.makedirs(f'{OUTPUT_PATH}/images', exist_ok=True)
+def convert_pdf_to_markdown(paper_id, pdf_path, ocr_output_path):
+    os.makedirs(ocr_output_path, exist_ok=True)
+    os.makedirs(f'{ocr_output_path}/images', exist_ok=True)
     
     print(f'{Colors.RED}PDF loading .....{Colors.RESET}')
 
 
-    images = pdf_to_images_high_quality(INPUT_PATH)
+    images = pdf_to_images_high_quality(pdf_path)
 
 
     prompt = PROMPT
@@ -276,33 +252,14 @@ if __name__ == "__main__":
             desc="Pre-processed images"
         ))
 
-
-    # for image in tqdm(images):
-
-    #     prompt_in = prompt
-    #     cache_list = [
-    #         {
-    #             "prompt": prompt_in,
-    #             "multi_modal_data": {"image": DeepseekOCRProcessor().tokenize_with_images(images = [image], bos=True, eos=True, cropping=CROP_MODE)},
-    #         }
-    #     ]
-    #     batch_inputs.extend(cache_list)
-
-
     outputs_list = llm.generate(
         batch_inputs,
         sampling_params=sampling_params
     )
 
-
-    output_path = OUTPUT_PATH
-
-    os.makedirs(output_path, exist_ok=True)
-
-
-    mmd_det_path = output_path + '/' + INPUT_PATH.split('/')[-1].replace('.pdf', '_det.mmd')
-    mmd_path = output_path + '/' + INPUT_PATH.split('/')[-1].replace('pdf', 'mmd')
-    pdf_out_path = output_path + '/' + INPUT_PATH.split('/')[-1].replace('.pdf', '_layouts.pdf')
+    mmd_det_path = f"{ocr_output_path}/{paper_id}_det.mmd"
+    mmd_path = f"{ocr_output_path}/{paper_id}.mmd"
+    pdf_out_path = f"{ocr_output_path}/{paper_id}_layouts.pdf"
     contents_det = ''
     contents = ''
     draw_images = []
@@ -349,6 +306,6 @@ if __name__ == "__main__":
     with open(mmd_path, 'w', encoding='utf-8') as afile:
         afile.write(contents)
 
-
     pil_to_pdf_img2pdf(draw_images, pdf_out_path)
+    return contents, mmd_path
 

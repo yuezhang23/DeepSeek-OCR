@@ -13,8 +13,8 @@ from openai import OpenAI
 
 from review_pipeline import config
 from review_pipeline.arxiv_client import PaperMetadata, download
-from review_pipeline.ocr import convert_pdf_to_markdown
 from review_pipeline.relevance import RelevanceScore
+from review_pipeline.ocr import convert_pdf_to_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -195,13 +195,14 @@ def build_all_summaries(
 
         try:
             if plan["method"] == "full_text":
-                mmd_path = cache_dir / f"{arxiv_id.replace('/', '_')}.mmd"
+                paper_id = arxiv_id.replace(".", "_")
+                mmd_path = cache_dir / f"{paper_id}.mmd"
                 if mmd_path.exists():
                     related_md = mmd_path.read_text(encoding="utf-8")
                 else:
                     pdf_path = download(arxiv_id, cache_dir)
-                    related_md = convert_pdf_to_markdown(pdf_path)
-                    mmd_path.write_text(related_md, encoding="utf-8")
+                    related_md, mmd_path = convert_pdf_to_markdown(paper_id, pdf_path, cache_dir)
+                    # mmd_path.write_text(related_md, encoding="utf-8")
 
                 summary_text = _summarize_full_text(
                     meta, related_md, plan["focus_areas"], paper_markdown, client
