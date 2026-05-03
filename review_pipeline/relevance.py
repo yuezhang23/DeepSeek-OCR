@@ -73,7 +73,7 @@ class RelevanceScore(TypedDict):
 def evaluate_relevance(
     paper_markdown: str,
     candidates: dict[str, PaperMetadata],
-    client: OpenAI,
+    client: OpenAI | None = None,
     top_k: int = None,
 ) -> list[RelevanceScore]:
     """Score each candidate paper and return the top_k most relevant.
@@ -82,6 +82,11 @@ def evaluate_relevance(
     Returns list sorted by relevance_score descending.
     """
     top_k = top_k or config.TOP_K_PAPERS
+    if client is None:
+        client = OpenAI(
+            api_key=config.DEEPSEEK_API_KEY,
+            base_url=config.DEEPSEEK_BASE_URL,
+        )
 
     if not candidates:
         return []
@@ -112,7 +117,8 @@ def evaluate_relevance(
             {"role": "user", "content": user_message},
         ],
         tools=[_RELEVANCE_TOOL],
-        tool_choice={"type": "function", "function": {"name": "submit_relevance_scores"}},
+        tool_choice="auto",
+        extra_body={"thinking_mode": "thinking"},
     )
 
     tool_call = response.choices[0].message.tool_calls[0]

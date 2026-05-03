@@ -59,7 +59,7 @@ def generate_search_queries(
     paper_markdown: str,
     venue: str = "ICLR",
     num_queries: int = 12,
-    client: OpenAI = None,
+    client: OpenAI | None = None,
 ) -> list[str]:
     """Analyze the paper and return a flat list of arXiv search queries.
 
@@ -67,6 +67,12 @@ def generate_search_queries(
     and related-technique queries.
     """
     per_bucket = max(3, num_queries // 3)
+    if client is None:
+        client = OpenAI(
+            api_key=config.DEEPSEEK_API_KEY,
+            base_url=config.DEEPSEEK_BASE_URL,
+        )
+
     user_message = (
         f"The paper above is intended for submission to {venue}.\n"
         f"Generate {per_bucket} search queries per category (benchmark_queries, "
@@ -82,7 +88,8 @@ def generate_search_queries(
             {"role": "user", "content": user_message},
         ],
         tools=[_QUERY_TOOL],
-        tool_choice={"type": "function", "function": {"name": "submit_search_queries"}},
+        tool_choice="auto",
+        extra_body={"thinking_mode": "thinking"},
     )
 
     tool_call = response.choices[0].message.tool_calls[0]
@@ -92,3 +99,4 @@ def generate_search_queries(
         + tool_input.get("problem_queries", [])
         + tool_input.get("technique_queries", [])
     )
+    # return response.choices[0].message.content.strip().split("\n")

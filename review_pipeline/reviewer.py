@@ -146,7 +146,8 @@ def generate_review(
             {"role": "user", "content": user_message},
         ],
         tools=[_REVIEW_TOOL],
-        tool_choice={"type": "function", "function": {"name": "submit_review"}},
+        tool_choice="auto",
+        extra_body={"thinking_mode": "thinking"},
     )
 
     tool_call = response.choices[0].message.tool_calls[0]

@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
         description="Generate an ICLR-style peer review for a research paper PDF."
     )
     parser.add_argument("--pdf", help="Path to the input paper PDF.")
+    parser.add_argument("--pdf_name", default=None, help="Unique name/ID for the paper (defaults to PDF stem).")
     parser.add_argument("--venue", default="ICLR", help="Target venue (default: ICLR).")
     parser.add_argument("--output", default=None, help="Output path for the review markdown.")
     parser.add_argument(
@@ -67,10 +68,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_pipeline(
+    paper_id: str,
     pdf_path: Path,
     venue: str = "ICLR",
     output_path: Path | None = None,
-    force_rerun: bool = False,
+    force_rerun: bool = True,
     skip_ocr_related: bool = False,
     markdown_path: Path | None = None,
     score_dimensions: bool = False,
@@ -92,8 +94,8 @@ def run_pipeline(
         tavily_key=tavily_api_key,
     )
 
-    paper_stem = pdf_path.stem
-    cache = StageCache(paper_stem, config.CACHE_DIR)
+    cache_key = paper_id or (markdown_path.stem if markdown_path else pdf_path.stem)
+    cache = StageCache(cache_key, config.CACHE_DIR)
 
     # ── Stage 2: OCR ─────────────────────────────────────────────────────────
     if markdown_path is not None:
@@ -132,7 +134,7 @@ def run_pipeline(
         results = cache.load("search_results")
 
     arxiv_ids = search.extract_arxiv_ids(results)
-    print(f"  Extracted {len(arxiv_ids)} arXiv IDs")
+    print(f"  Extracted {len(arxiv_ids)} arXiv IDs. e.g. {arxiv_ids[0] if arxiv_ids else ''}")
 
     # ── Stage 5: ArXiv Metadata ───────────────────────────────────────────────
     if force_rerun or not cache.exists("arxiv_metadata"):
@@ -144,7 +146,7 @@ def run_pipeline(
         print("\n[Stage 5/9] arXiv metadata cache hit.")
         metadata_map = cache.load("arxiv_metadata")
 
-    # ── Stage 6: Relevance Ranking (Claude) ───────────────────────────────────
+    # ── Stage 6: Relevance Ranking (DeepSeek) ───────────────────────────────────
     if force_rerun or not cache.exists("ranked_papers"):
         print(f"\n[Stage 6/9] Evaluating relevance of {len(metadata_map)} papers...")
         ranked = relevance.evaluate_relevance(
@@ -156,7 +158,7 @@ def run_pipeline(
         print("\n[Stage 6/9] Relevance ranking cache hit.")
         ranked = cache.load("ranked_papers")
 
-    # ── Stage 7: Summarization Plan (Claude) ──────────────────────────────────
+    # ── Stage 7: Summarization Plan (DeepSeek) ──────────────────────────────────
     if force_rerun or not cache.exists("summarization_plan"):
         print("\n[Stage 7/9] Planning summarization strategy...")
         max_ft = 0 if skip_ocr_related else config.MAX_FULL_TEXT_PAPERS
@@ -170,12 +172,12 @@ def run_pipeline(
         print("\n[Stage 7/9] Summarization plan cache hit.")
         plans = cache.load("summarization_plan")
 
-    # ── Stage 8: Generate Summaries (Claude) ──────────────────────────────────
+    # ── Stage 8: Generate Summaries (DeepSeek) ──────────────────────────────────
     if force_rerun or not cache.exists("summaries"):
         print("\n[Stage 8/9] Generating related work summaries...")
-        related_cache = config.CACHE_DIR / paper_stem / "related"
+        related_cache = cache.dir / "related"
         summaries = summarizer.build_all_summaries(
-            paper_md, plans, metadata_map, cache_dir=related_cache, client=clients.deepseek
+            paper_md, plans, metadata_map, cache_dir=related_cache, client=clients.deepseek 
         )
         cache.save("summaries", summaries)
         print(f"  Summarized {len(summaries)} papers")
@@ -183,10 +185,10 @@ def run_pipeline(
         print("\n[Stage 8/9] Summary cache hit.")
         summaries = cache.load("summaries")
 
-    # ── Stage 9a / 9b: Review or Dimensional Scoring (Claude) ────────────────
+    # ── Stage 9a / 9b: Review or Dimensional Scoring (DeepSeek) ────────────────
     if score_dimensions:
         print("\n[Stage 9/9] Scoring paper on 7 quality dimensions...")
-        model_dir = config.CACHE_DIR / paper_stem / "models"
+        model_dir = cache.dir / "models"
         scoring_model = scorer.DimensionalScoringModel(model_dir=model_dir)
         scores, final_score = scorer.score_paper(
             paper_md, summaries, client=clients.deepseek, model=scoring_model
@@ -228,6 +230,7 @@ def main():
             sys.exit(1)
 
     output = run_pipeline(
+        paper_id=args.pdf_name,
         pdf_path=pdf_path,
         venue=args.venue,
         output_path=Path(args.output) if args.output else None,
