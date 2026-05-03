@@ -1,15 +1,12 @@
 """
-Stage 9: Generate a comprehensive ICLR 2026-style peer review.
-
-Paper markdown is cached in the system block. Related work summaries are
-appended to the system context so Claude has complete grounding before
-producing the structured review.
+Stage 9a: Generate a comprehensive ICLR-style peer review.
 """
 from __future__ import annotations
 
-from typing import Optional, TypedDict
+import json
+from typing import TypedDict
 
-import anthropic
+from openai import OpenAI
 
 from review_pipeline import config
 from review_pipeline.summarizer import PaperSummary
@@ -50,58 +47,61 @@ ICLR 2026 REVIEW CRITERIA:
 """
 
 _REVIEW_TOOL = {
-    "name": "submit_review",
-    "description": "Submit the completed ICLR peer review.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "summary": {
-                "type": "string",
-                "description": "3-5 sentence summary of the paper's main contributions and approach.",
+    "type": "function",
+    "function": {
+        "name": "submit_review",
+        "description": "Submit the completed ICLR peer review.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "3-5 sentence summary of the paper's main contributions and approach.",
+                },
+                "strengths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of specific strengths (3-6 items).",
+                    "minItems": 2,
+                },
+                "weaknesses": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of specific weaknesses or concerns (3-6 items).",
+                    "minItems": 2,
+                },
+                "questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific questions for the authors to address (2-5 items).",
+                    "minItems": 1,
+                },
+                "limitations_and_societal_impact": {
+                    "type": "string",
+                    "description": "Assessment of limitations acknowledged by the authors and potential societal impact.",
+                },
+                "rating": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Overall rating: 1=Strong Reject, 5=Borderline Accept, 8=Strong Accept, 10=Outstanding.",
+                },
+                "confidence": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 5,
+                    "description": "Reviewer confidence: 1=educated guess, 5=absolutely certain.",
+                },
+                "ethics_flag": {
+                    "type": "boolean",
+                    "description": "True if the paper raises significant ethical concerns requiring committee review.",
+                },
             },
-            "strengths": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "List of specific strengths (3-6 items).",
-                "minItems": 2,
-            },
-            "weaknesses": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "List of specific weaknesses or concerns (3-6 items).",
-                "minItems": 2,
-            },
-            "questions": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Specific questions for the authors to address (2-5 items).",
-                "minItems": 1,
-            },
-            "limitations_and_societal_impact": {
-                "type": "string",
-                "description": "Assessment of limitations acknowledged by the authors and potential societal impact.",
-            },
-            "rating": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 10,
-                "description": "Overall rating: 1=Strong Reject, 5=Borderline Accept, 8=Strong Accept, 10=Outstanding.",
-            },
-            "confidence": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 5,
-                "description": "Reviewer confidence: 1=educated guess, 5=absolutely certain.",
-            },
-            "ethics_flag": {
-                "type": "boolean",
-                "description": "True if the paper raises significant ethical concerns requiring committee review.",
-            },
+            "required": [
+                "summary", "strengths", "weaknesses", "questions",
+                "limitations_and_societal_impact", "rating", "confidence", "ethics_flag",
+            ],
         },
-        "required": [
-            "summary", "strengths", "weaknesses", "questions",
-            "limitations_and_societal_impact", "rating", "confidence", "ethics_flag",
-        ],
     },
 }
 
@@ -120,60 +120,40 @@ class ILCRReview(TypedDict):
 def generate_review(
     paper_markdown: str,
     summaries: dict[str, PaperSummary],
+    client: OpenAI,
     venue: str = "ICLR",
     year: int = 2026,
-    client: Optional[anthropic.Anthropic] = None,
 ) -> tuple[ILCRReview, str]:
-    """Generate a structured ICLR review and return (review_dict, markdown_string).
-
-    The paper markdown and related work summaries are both placed in the
-    (cached) system block for full grounding before review generation.
-    """
-    client = client or anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-
+    """Generate a structured ICLR review and return (review_dict, markdown_string)."""
     related_work_context = _build_related_work_context(summaries)
 
-    system_blocks = [
-        {"type": "text", "text": _SYSTEM_PREAMBLE + "\n\n" + _ICLR_CRITERIA},
-        {
-            "type": "text",
-            "text": paper_markdown,
-            "cache_control": {"type": "ephemeral"},
-        },
-    ]
+    system_content = _SYSTEM_PREAMBLE + "\n\n" + _ICLR_CRITERIA + "\n\n" + paper_markdown
     if related_work_context:
-        system_blocks.append(
-            {
-                "type": "text",
-                "text": related_work_context,
-                "cache_control": {"type": "ephemeral"},
-            }
-        )
+        system_content += "\n\n" + related_work_context
 
     user_message = (
         f"Please write a complete {venue} {year} peer review for the paper above. "
-        f"Ground your assessment in the related work summaries provided in the system "
-        f"context. Be specific and cite concrete evidence from the paper. "
+        f"Ground your assessment in the related work summaries provided. "
+        f"Be specific and cite concrete evidence from the paper. "
         f"Use the submit_review tool."
     )
 
-    response = client.messages.create(
-        model=config.CLAUDE_MODEL,
+    response = client.chat.completions.create(
+        model=config.DEEPSEEK_MODEL,
         max_tokens=4096,
-        system=system_blocks,
-        messages=[{"role": "user", "content": user_message}],
+        messages=[
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_message},
+        ],
         tools=[_REVIEW_TOOL],
-        tool_choice={"type": "tool", "name": "submit_review"},
+        tool_choice={"type": "function", "function": {"name": "submit_review"}},
     )
 
-    review_dict: ILCRReview = {}
-    for block in response.content:
-        if block.type == "tool_use":
-            review_dict = block.input
-            break
+    tool_call = response.choices[0].message.tool_calls[0]
+    review_dict: ILCRReview = json.loads(tool_call.function.arguments)
 
     if not review_dict:
-        raise ValueError("Claude did not return a tool_use block for review generation.")
+        raise ValueError("Model did not return a tool_use block for review generation.")
 
     return review_dict, format_review_markdown(review_dict, venue=venue, year=year)
 

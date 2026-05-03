@@ -5,13 +5,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Required API keys — raise immediately if missing
-# ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
-# TAVILY_API_KEY: str = os.environ["TAVILY_API_KEY"]
+# API keys — read from environment / .env file
+ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
 
 # Model settings
 CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
-OCR_MODEL_NAME: str = os.getenv("OCR_MODEL_NAME", "deepseek-ai/DeepSeek-OCR-2")
+DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+OCR_MODEL_NAME: str = os.getenv("OCR_MODEL_NAME", "deepseek-ai/DeepSeek-OCR")
 OCR_DTYPE: str = os.getenv("OCR_DTYPE", "bfloat16")
 
 # Paths

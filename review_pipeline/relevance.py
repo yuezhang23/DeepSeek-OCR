@@ -1,59 +1,63 @@
 """
-Stage 6: Evaluate the relevance of candidate papers to the target paper using Claude.
+Stage 6: Evaluate the relevance of candidate papers to the target paper.
 
 All candidates are evaluated in a single API call to minimize round trips.
-The paper markdown is cached in the system block.
 """
 from __future__ import annotations
 
-from typing import Optional, TypedDict
+import json
+from typing import TypedDict
 
-import anthropic
+from openai import OpenAI
 
 from review_pipeline import config
 from review_pipeline.arxiv_client import PaperMetadata
 
 _SYSTEM_PREAMBLE = """\
-You are an expert academic paper reviewer. You will be given the full text of a research paper (the "target paper") and a list of candidate related papers \
-(title + abstract only). Your task is to score each candidate's relevance to the target paper for the purpose of grounding a peer review."""
+You are an expert academic paper reviewer. You will be given the full text of a research paper \
+(the "target paper") and a list of candidate related papers (title + abstract only). Your task \
+is to score each candidate's relevance to the target paper for the purpose of grounding a peer review."""
 
 _RELEVANCE_TOOL = {
-    "name": "submit_relevance_scores",
-    "description": "Submit relevance scores for each candidate paper.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "scores": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "arxiv_id": {"type": "string"},
-                        "relevance_score": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 10,
-                            "description": "1=unrelated, 10=directly comparable / must-cite",
+    "type": "function",
+    "function": {
+        "name": "submit_relevance_scores",
+        "description": "Submit relevance scores for each candidate paper.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "scores": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "arxiv_id": {"type": "string"},
+                            "relevance_score": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 10,
+                                "description": "1=unrelated, 10=directly comparable / must-cite",
+                            },
+                            "relevance_reason": {
+                                "type": "string",
+                                "description": "One sentence explaining the relationship.",
+                            },
+                            "relationship_type": {
+                                "type": "string",
+                                "enum": ["baseline", "competitor", "technique", "related"],
+                            },
                         },
-                        "relevance_reason": {
-                            "type": "string",
-                            "description": "One sentence explaining the relationship.",
-                        },
-                        "relationship_type": {
-                            "type": "string",
-                            "enum": ["baseline", "competitor", "technique", "related"],
-                        },
+                        "required": [
+                            "arxiv_id",
+                            "relevance_score",
+                            "relevance_reason",
+                            "relationship_type",
+                        ],
                     },
-                    "required": [
-                        "arxiv_id",
-                        "relevance_score",
-                        "relevance_reason",
-                        "relationship_type",
-                    ],
                 },
-            }
+            },
+            "required": ["scores"],
         },
-        "required": ["scores"],
     },
 }
 
@@ -69,18 +73,15 @@ class RelevanceScore(TypedDict):
 def evaluate_relevance(
     paper_markdown: str,
     candidates: dict[str, PaperMetadata],
+    client: OpenAI,
     top_k: int = None,
-    client: Optional[anthropic.Anthropic] = None,
-    api_key: Optional[str] = None,
 ) -> list[RelevanceScore]:
     """Score each candidate paper and return the top_k most relevant.
 
-    Uses a single Claude call with all candidates in one human message.
-    Paper markdown is placed in the (cached) system block.
+    Uses a single API call with all candidates in one user message.
     Returns list sorted by relevance_score descending.
     """
     top_k = top_k or config.TOP_K_PAPERS
-    client = client or anthropic.Anthropic(api_key=api_key or config.ANTHROPIC_KEY)
 
     if not candidates:
         return []
@@ -103,29 +104,20 @@ def evaluate_relevance(
         + "\n".join(candidate_lines)
     )
 
-    response = client.messages.create(
-        model=config.CLAUDE_MODEL,
+    response = client.chat.completions.create(
+        model=config.DEEPSEEK_MODEL,
         max_tokens=4096,
-        system=[
-            {"type": "text", "text": _SYSTEM_PREAMBLE},
-            {
-                "type": "text",
-                "text": paper_markdown,
-                "cache_control": {"type": "ephemeral"},
-            },
+        messages=[
+            {"role": "system", "content": _SYSTEM_PREAMBLE + "\n\n" + paper_markdown},
+            {"role": "user", "content": user_message},
         ],
-        messages=[{"role": "user", "content": user_message}],
         tools=[_RELEVANCE_TOOL],
-        tool_choice={"type": "tool", "name": "submit_relevance_scores"},
+        tool_choice={"type": "function", "function": {"name": "submit_relevance_scores"}},
     )
 
-    raw_scores: list[dict] = []
-    for block in response.content:
-        if block.type == "tool_use":
-            raw_scores = block.input.get("scores", [])
-            break
+    tool_call = response.choices[0].message.tool_calls[0]
+    raw_scores: list[dict] = json.loads(tool_call.function.arguments).get("scores", [])
 
-    # Attach titles from metadata and sort
     results: list[RelevanceScore] = []
     for s in raw_scores:
         arxiv_id = s["arxiv_id"]

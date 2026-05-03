@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import TypedDict
 
 import numpy as np
+from openai import OpenAI
+
+from review_pipeline import config
 
 logger = logging.getLogger(__name__)
 
@@ -91,32 +94,35 @@ class DimensionScores(TypedDict):
     rationale: dict[str, str]
 
 
-# ─── Claude tool definition ───────────────────────────────────────────────────
+# ─── Tool definition ─────────────────────────────────────────────────────────
 
 _SCORE_TOOL = {
-    "name": "submit_dimension_scores",
-    "description": (
-        "Submit quality scores for the paper across 7 evaluation dimensions. "
-        "Each score is an integer from 1 (very poor) to 10 (excellent)."
-    ),
-    "input_schema": {
-        "type": "object",
-        "required": DIMENSIONS + ["rationale"],
-        "properties": {
-            **{
-                dim: {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10,
-                    "description": _DIMENSION_DESCRIPTIONS[dim],
-                }
-                for dim in DIMENSIONS
-            },
-            "rationale": {
-                "type": "object",
-                "description": "One-sentence justification for each dimension score.",
-                "required": DIMENSIONS,
-                "properties": {dim: {"type": "string"} for dim in DIMENSIONS},
+    "type": "function",
+    "function": {
+        "name": "submit_dimension_scores",
+        "description": (
+            "Submit quality scores for the paper across 7 evaluation dimensions. "
+            "Each score is an integer from 1 (very poor) to 10 (excellent)."
+        ),
+        "parameters": {
+            "type": "object",
+            "required": DIMENSIONS + ["rationale"],
+            "properties": {
+                **{
+                    dim: {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": _DIMENSION_DESCRIPTIONS[dim],
+                    }
+                    for dim in DIMENSIONS
+                },
+                "rationale": {
+                    "type": "object",
+                    "description": "One-sentence justification for each dimension score.",
+                    "required": DIMENSIONS,
+                    "properties": {dim: {"type": "string"} for dim in DIMENSIONS},
+                },
             },
         },
     },
@@ -250,35 +256,17 @@ _default_model = DimensionalScoringModel()
 def score_paper(
     paper_md: str,
     summaries: dict,
-    client,  # anthropic.Anthropic
+    client: OpenAI,
     model: DimensionalScoringModel | None = None,
 ) -> tuple[DimensionScores, float]:
-    """
-    Ask Claude to score the paper on 7 dimensions, then apply the linear model.
+    """Score the paper on 7 dimensions, then apply the linear model.
 
-    Returns:
-        (scores_dict, final_score) where final_score is clipped to [1, 10].
+    Returns (scores_dict, final_score) where final_score is clipped to [1, 10].
     """
-    from review_pipeline import config
-
     related_ctx = _build_related_work_context(summaries)
-
-    system_blocks: list[dict] = [
-        {"type": "text", "text": _SYSTEM_PREAMBLE + "\n\n" + _SCORING_CRITERIA},
-        {
-            "type": "text",
-            "text": f"Paper to evaluate:\n\n{paper_md}",
-            "cache_control": {"type": "ephemeral"},
-        },
-    ]
+    system_content = _SYSTEM_PREAMBLE + "\n\n" + _SCORING_CRITERIA + "\n\nPaper to evaluate:\n\n" + paper_md
     if related_ctx:
-        system_blocks.append(
-            {
-                "type": "text",
-                "text": related_ctx,
-                "cache_control": {"type": "ephemeral"},
-            }
-        )
+        system_content += "\n\n" + related_ctx
 
     user_message = (
         "Please evaluate this paper carefully on all 7 dimensions. "
@@ -286,22 +274,22 @@ def score_paper(
         "one-sentence rationale for each dimension."
     )
 
-    response = client.messages.create(
-        model=config.CLAUDE_MODEL,
+    response = client.chat.completions.create(
+        model=config.DEEPSEEK_MODEL,
         max_tokens=1024,
-        system=system_blocks,
-        messages=[{"role": "user", "content": user_message}],
+        messages=[
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_message},
+        ],
         tools=[_SCORE_TOOL],
-        tool_choice={"type": "tool", "name": "submit_dimension_scores"},
+        tool_choice={"type": "function", "function": {"name": "submit_dimension_scores"}},
     )
 
-    tool_block = next(
-        (b for b in response.content if b.type == "tool_use"), None
-    )
-    if tool_block is None:
-        raise ValueError("Claude did not return a tool_use block for dimension scoring.")
+    tool_call = response.choices[0].message.tool_calls[0]
+    if tool_call is None:
+        raise ValueError("Model did not return a tool_use block for dimension scoring.")
 
-    scores: DimensionScores = tool_block.input
+    scores: DimensionScores = json.loads(tool_call.function.arguments)
     final = (model or _default_model).predict(scores)
     return scores, final
 

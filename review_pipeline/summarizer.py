@@ -4,11 +4,12 @@ then generate summaries for each.
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
-from typing import Literal, Optional, TypedDict
+from typing import Literal, TypedDict
 
-import anthropic
+from openai import OpenAI
 
 from review_pipeline import config
 from review_pipeline.arxiv_client import PaperMetadata, download_pdf
@@ -25,32 +26,35 @@ that are most relevant to evaluating the target paper.
 """
 
 _PLAN_TOOL = {
-    "name": "submit_summarization_plan",
-    "description": "Submit the summarization plan for each related paper.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "plans": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "arxiv_id": {"type": "string"},
-                        "method": {
-                            "type": "string",
-                            "enum": ["abstract_only", "full_text"],
+    "type": "function",
+    "function": {
+        "name": "submit_summarization_plan",
+        "description": "Submit the summarization plan for each related paper.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plans": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "arxiv_id": {"type": "string"},
+                            "method": {
+                                "type": "string",
+                                "enum": ["abstract_only", "full_text"],
+                            },
+                            "focus_areas": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "For full_text papers: list specific aspects to focus on.",
+                            },
                         },
-                        "focus_areas": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "For full_text papers: list specific aspects to focus on.",
-                        },
+                        "required": ["arxiv_id", "method", "focus_areas"],
                     },
-                    "required": ["arxiv_id", "method", "focus_areas"],
                 },
-            }
+            },
+            "required": ["plans"],
         },
-        "required": ["plans"],
     },
 }
 
@@ -70,16 +74,15 @@ class PaperSummary(TypedDict):
 def plan_summarization(
     paper_markdown: str,
     ranked_papers: list[RelevanceScore],
+    client: OpenAI,
     max_full_text: int = None,
-    client: Optional[anthropic.Anthropic] = None,
 ) -> list[SummarizationPlan]:
     """Decide summarization method for each ranked paper.
 
-    Claude assigns 'full_text' to the most relevant papers (up to max_full_text)
+    Assigns 'full_text' to the most relevant papers (up to max_full_text)
     and 'abstract_only' to the rest, specifying focus areas for full_text papers.
     """
     max_full_text = max_full_text if max_full_text is not None else config.MAX_FULL_TEXT_PAPERS
-    client = client or anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
     if not ranked_papers:
         return []
@@ -98,33 +101,26 @@ def plan_summarization(
         + paper_list
     )
 
-    response = client.messages.create(
-        model=config.CLAUDE_MODEL,
+    response = client.chat.completions.create(
+        model=config.DEEPSEEK_MODEL,
         max_tokens=2048,
-        system=[
-            {"type": "text", "text": _SYSTEM_PREAMBLE},
-            {
-                "type": "text",
-                "text": paper_markdown,
-                "cache_control": {"type": "ephemeral"},
-            },
+        messages=[
+            {"role": "system", "content": _SYSTEM_PREAMBLE + "\n\n" + paper_markdown},
+            {"role": "user", "content": user_message},
         ],
-        messages=[{"role": "user", "content": user_message}],
         tools=[_PLAN_TOOL],
-        tool_choice={"type": "tool", "name": "submit_summarization_plan"},
+        tool_choice={"type": "function", "function": {"name": "submit_summarization_plan"}},
     )
 
-    for block in response.content:
-        if block.type == "tool_use":
-            return [SummarizationPlan(**p) for p in block.input.get("plans", [])]
-
-    raise ValueError("Claude did not return a tool_use block for summarization planning.")
+    tool_call = response.choices[0].message.tool_calls[0]
+    plans_data = json.loads(tool_call.function.arguments).get("plans", [])
+    return [SummarizationPlan(**p) for p in plans_data]
 
 
 def _summarize_abstract_only(
     meta: PaperMetadata,
     paper_markdown: str,
-    client: anthropic.Anthropic,
+    client: OpenAI,
 ) -> str:
     prompt = (
         f"Write a concise summary (150-250 words) of the following related paper as it "
@@ -134,20 +130,15 @@ def _summarize_abstract_only(
         f"Authors: {', '.join(meta['authors'][:5])}\n"
         f"Abstract: {meta['abstract']}"
     )
-    response = client.messages.create(
-        model=config.CLAUDE_MODEL,
+    response = client.chat.completions.create(
+        model=config.DEEPSEEK_MODEL,
         max_tokens=512,
-        system=[
-            {"type": "text", "text": _SYSTEM_PREAMBLE},
-            {
-                "type": "text",
-                "text": paper_markdown,
-                "cache_control": {"type": "ephemeral"},
-            },
+        messages=[
+            {"role": "system", "content": _SYSTEM_PREAMBLE + "\n\n" + paper_markdown},
+            {"role": "user", "content": prompt},
         ],
-        messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text.strip()
+    return response.choices[0].message.content.strip()
 
 
 def _summarize_full_text(
@@ -155,7 +146,7 @@ def _summarize_full_text(
     related_markdown: str,
     focus_areas: list[str],
     paper_markdown: str,
-    client: anthropic.Anthropic,
+    client: OpenAI,
 ) -> str:
     focus_str = "\n".join(f"- {area}" for area in focus_areas) if focus_areas else "- overall contribution"
     prompt = (
@@ -163,22 +154,17 @@ def _summarize_full_text(
         f"relates to the target paper. Focus especially on:\n{focus_str}\n\n"
         f"Title: {meta['title']}\n"
         f"Authors: {', '.join(meta['authors'][:5])}\n\n"
-        f"--- FULL PAPER TEXT ---\n{related_markdown[:40000]}"  # truncate for safety
+        f"--- FULL PAPER TEXT ---\n{related_markdown[:40000]}"
     )
-    response = client.messages.create(
-        model=config.CLAUDE_MODEL,
+    response = client.chat.completions.create(
+        model=config.DEEPSEEK_MODEL,
         max_tokens=1024,
-        system=[
-            {"type": "text", "text": _SYSTEM_PREAMBLE},
-            {
-                "type": "text",
-                "text": paper_markdown,
-                "cache_control": {"type": "ephemeral"},
-            },
+        messages=[
+            {"role": "system", "content": _SYSTEM_PREAMBLE + "\n\n" + paper_markdown},
+            {"role": "user", "content": prompt},
         ],
-        messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text.strip()
+    return response.choices[0].message.content.strip()
 
 
 def build_all_summaries(
@@ -186,7 +172,7 @@ def build_all_summaries(
     plans: list[SummarizationPlan],
     metadata_map: dict[str, PaperMetadata],
     cache_dir: Path,
-    client: Optional[anthropic.Anthropic] = None,
+    client: OpenAI,
 ) -> dict[str, PaperSummary]:
     """Generate summaries for all planned papers.
 
@@ -196,7 +182,6 @@ def build_all_summaries(
     """
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    client = client or anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
     summaries: dict[str, PaperSummary] = {}
 
