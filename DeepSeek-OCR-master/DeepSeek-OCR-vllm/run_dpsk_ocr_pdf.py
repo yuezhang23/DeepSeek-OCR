@@ -17,7 +17,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 # make sure the path of config_0.py can be found by current directory
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from config_0 import MODEL_PATH, PROMPT, SKIP_REPEAT, MAX_CONCURRENCY, NUM_WORKERS, CROP_MODE
+from config import MODEL_PATH, PROMPT, SKIP_REPEAT, MAX_CONCURRENCY, NUM_WORKERS, CROP_MODE
 
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
