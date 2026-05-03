@@ -24,3 +24,15 @@ TOP_K_PAPERS: int = int(os.getenv("TOP_K_PAPERS", "12"))
 MAX_FULL_TEXT_PAPERS: int = int(os.getenv("MAX_FULL_TEXT_PAPERS", "5"))
 MAX_TAVILY_RESULTS: int = int(os.getenv("MAX_TAVILY_RESULTS", "5"))
 DEFAULT_VENUE: str = os.getenv("DEFAULT_VENUE", "ICLR")
+
+
+BASE_SIZE = 1024
+IMAGE_SIZE = 640
+CROP_MODE = True
+MIN_CROPS= 2
+MAX_CROPS= 6 # max:9; If your GPU memory is small, it is recommended to set it to 6.
+MAX_CONCURRENCY = 100 # If you have limited GPU memory, lower the concurrency count.
+NUM_WORKERS = 64 # image pre-process (resize/padding) workers 
+PRINT_NUM_VIS_TOKENS = False
+SKIP_REPEAT = True
+MODEL_PATH = 'deepseek-ai/DeepSeek-OCR' # change to your model path
