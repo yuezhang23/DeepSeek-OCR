@@ -17,14 +17,10 @@ from review_pipeline.summarizer import PaperSummary
 RATING_LABELS = {
     1: "Strong Reject",
     2: "Reject",
-    3: "Weak Reject",
-    4: "Borderline Reject",
-    5: "Borderline Accept",
-    6: "Weak Accept",
-    7: "Accept",
-    8: "Strong Accept",
-    9: "Very Strong Accept",
-    10: "Outstanding",
+    3: "Borderline Reject",
+    4: "Borderline Accept",
+    5: "Accept",
+    6: "Strong Accept",
 }
 
 CONFIDENCE_LABELS = {

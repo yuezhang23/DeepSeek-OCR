@@ -48,6 +48,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Tavily API key (defaults to TAVILY_API_KEY env var or config.py).",
     )
+    parser.add_argument(
+        "--score-dimensions",
+        action="store_true",
+        help=(
+            "Run Stage 9-b instead of the default review: score the paper on 7 "
+            "quality dimensions and compute a final score via linear regression."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -60,6 +68,7 @@ def run_pipeline(
     markdown_path: Path | None = None,
     anthropic_api_key: str | None = None,
     tavily_api_key: str | None = None,
+    score_dimensions: bool = False,
 ) -> str:
     """Execute all pipeline stages with per-stage caching. Returns review file path."""
     # ensure review_pipeline is on the path for imports
@@ -67,7 +76,7 @@ def run_pipeline(
     
     from review_pipeline import config
     from review_pipeline.cache import StageCache
-    from review_pipeline import ocr, query_gen, search, arxiv_client, relevance, summarizer, reviewer
+    from review_pipeline import ocr, query_gen, search, arxiv_client, relevance, summarizer, reviewer, scorer
 
     import anthropic
     from tavily import TavilyClient
@@ -119,6 +128,7 @@ def run_pipeline(
         results = cache.load("search_results")
 
     arxiv_ids = search.extract_arxiv_ids(results)
+    print(f"arXiv ids: {arxiv_ids}")
     print(f"  Extracted {len(arxiv_ids)} arXiv IDs")
 
     # ── Stage 5: ArXiv Metadata ──────────────────────────────────────────────────
@@ -135,7 +145,7 @@ def run_pipeline(
     if force_rerun or not cache.exists("ranked_papers"):
         print(f"\n[Stage 6/9] Evaluating relevance of {len(metadata_map)} papers...")
         ranked = relevance.evaluate_relevance(
-            paper_md, metadata_map, top_k=config.TOP_K_PAPERS, client=claude
+            paper_md, metadata_map, top_k=config.TOP_K_PAPERS, client=claude, api_key=anthropic_key
         )
         cache.save("ranked_papers", ranked)
         print(f"  Top-{len(ranked)} papers selected")
@@ -168,36 +178,47 @@ def run_pipeline(
         print("\n[Stage 8/9] Summary cache hit.")
         summaries = cache.load("summaries")
 
-    # ── Stage 9: Generate Review ─────────────────────────────────────────────────
-    print(f"\n[Stage 9/9] Generating {venue} 2026 review...")
-    _, review_md = reviewer.generate_review(
-        paper_md, summaries, venue=venue, year=2026, client=claude
-    )
-    cache.save("review", review_md)
+    # ── Stage 9a / 9b: Review or Dimensional Scoring ────────────────────────────
+    if score_dimensions:
+        print(f"\n[Stage 9/9] Scoring paper on 7 quality dimensions...")
+        model_dir = config.CACHE_DIR / paper_stem / "models"
+        scoring_model = scorer.DimensionalScoringModel(model_dir=model_dir)
+        scores, final_score = scorer.score_paper(paper_md, summaries, client=claude, model=scoring_model)
+        output_md = scorer.format_scores_markdown(
+            scores, final_score, model=scoring_model, venue=venue, year=2026
+        )
+        cache.save("dimension_scores", {"scores": scores, "final_score": final_score})
+        for dim in scorer.DIMENSIONS:
+            print(f"  {scorer.DIMENSION_LABELS[dim]}: {scores[dim]}/10")
+        print(f"  Final score: {final_score:.2f}/10")
+    else:
+        print(f"\n[Stage 9/9] Generating {venue} 2026 review...")
+        _, output_md = reviewer.generate_review(
+            paper_md, summaries, venue=venue, year=2026, client=claude
+        )
+        cache.save("review", output_md)
 
-    # if output_path is None, create this path to write the review to: <pdf_stem>/final_review.md
-    # if output_path is None:
-    #     output_path = Path(pdf_path.parent) / paper_stem / "final_review.md"
-
-    output_path.write_text(review_md, encoding="utf-8")
-    print(f"\nReview written to: {output_path}")
+    output_path.write_text(output_md, encoding="utf-8")
+    print(f"\nOutput written to: {output_path}")
     return str(output_path)
 
 
 def main():
     args = parse_args()
-    pdf_path = Path(args.pdf)
-
 
     markdown_path = None
+    pdf_path = None
     if args.markdown:
         markdown_path = Path(args.markdown)
-        # if not markdown_path.exists():
-        #     print(f"Error: Markdown file not found: {markdown_path}", file=sys.stderr)
-        #     sys.exit(1)
-    elif not pdf_path.exists():
-        print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
-        sys.exit(1)
+        pdf_path = Path(args.pdf) if args.pdf else Path("placeholder.pdf")
+    else:
+        if not args.pdf:
+            print("Error: --pdf is required when --markdown is not provided.", file=sys.stderr)
+            sys.exit(1)
+        pdf_path = Path(args.pdf)
+        if not pdf_path.exists():
+            print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
+            sys.exit(1)
 
     output = run_pipeline(
         pdf_path=pdf_path,
@@ -205,11 +226,12 @@ def main():
         output_path=Path(args.output) if args.output else None,
         force_rerun=args.force_rerun,
         skip_ocr_related=args.skip_ocr_related,
-        markdown_path=Path(args.markdown) if args.markdown else None,
+        markdown_path=markdown_path,
         anthropic_api_key=args.anthropic_api_key,
         tavily_api_key=args.tavily_api_key,
+        score_dimensions=args.score_dimensions,
     )
-    print(f"\nDone. Review saved to: {output}")
+    print(f"\nDone. Output saved to: {output}")
 
 
 if __name__ == "__main__":

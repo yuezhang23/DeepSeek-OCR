@@ -57,17 +57,18 @@ def fetch_metadata(arxiv_ids: list[str]) -> dict[str, PaperMetadata]:
                 categories=paper.categories,
                 pdf_url=paper.pdf_url or "",
             )
+            print(f"Fetched metadata for {arxiv_id}:/n{metadata[arxiv_id].keys()}")
     except Exception as exc:
         logger.warning("Error fetching arXiv metadata: %s", exc)
 
     missing = set(unique_ids) - set(metadata.keys())
     if missing:
         logger.warning("Could not fetch metadata for %d papers: %s", len(missing), missing)
-
     return metadata
 
 
-def download_pdf(arxiv_id: str, dest_dir: Path, filename: str = None) -> Path:
+def download(arxiv_id: str, dest_dir: Path, pdf_url: str = None) -> Path:
+    # client.download(arxiv_id, dest_dir="pdfs", pdf_url)
     """Download the PDF for an arXiv paper.
 
     Returns the path to the saved PDF. Retries up to 3 times on failure.
@@ -76,25 +77,31 @@ def download_pdf(arxiv_id: str, dest_dir: Path, filename: str = None) -> Path:
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = filename or f"{arxiv_id.replace('/', '_')}.pdf"
+    filename = f"{arxiv_id.replace('/', '_')}.pdf"
     dest_path = dest_dir / filename
 
     if dest_path.exists():
         return dest_path
+    
+    import requests
+    url = pdf_url or f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+    print(f"Downloading PDF for {arxiv_id} from {url}...")
+    response = requests.get(url)
+    with open(dest_path, "wb") as f:
+        f.write(response.content)
 
-    client = arxiv.Client(num_retries=3, delay_seconds=3.0)
-    search = arxiv.Search(id_list=[arxiv_id])
+    return dest_path
 
-    for attempt in range(3):
+
+if __name__ == "__main__":
+    # Example usage
+    test_ids = ["2405.18881", "2307.06350", "2506.16853"]
+    metadata = fetch_metadata(test_ids)
+
+    for arxiv_id in metadata.keys():
         try:
-            paper = next(client.results(search))
-            paper.download_pdf(dirpath=str(dest_dir), filename=filename)
-            return dest_path
-        except StopIteration:
-            raise RuntimeError(f"arXiv paper not found: {arxiv_id}")
-        except Exception as exc:
-            logger.warning("PDF download attempt %d failed for %s: %s", attempt + 1, arxiv_id, exc)
-            if attempt < 2:
-                time.sleep(5 * (attempt + 1))
+            pdf_url = metadata[arxiv_id]['pdf_url']
+            pad_path = download(arxiv_id, dest_dir="pdfs", pdf_url=pdf_url)
 
-    raise RuntimeError(f"Failed to download PDF for {arxiv_id} after 3 attempts.")
+        except RuntimeError as exc:
+            logger.error("Error downloading PDF for %s: %s", arxiv_id, exc)

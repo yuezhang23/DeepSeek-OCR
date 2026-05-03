@@ -14,11 +14,8 @@ from review_pipeline import config
 from review_pipeline.arxiv_client import PaperMetadata
 
 _SYSTEM_PREAMBLE = """\
-You are an expert academic paper reviewer. You will be given the full text of a \
-research paper (the "target paper") and a list of candidate related papers \
-(title + abstract only). Your task is to score each candidate's relevance to \
-the target paper for the purpose of grounding a peer review.
-"""
+You are an expert academic paper reviewer. You will be given the full text of a research paper (the "target paper") and a list of candidate related papers \
+(title + abstract only). Your task is to score each candidate's relevance to the target paper for the purpose of grounding a peer review."""
 
 _RELEVANCE_TOOL = {
     "name": "submit_relevance_scores",
@@ -74,6 +71,7 @@ def evaluate_relevance(
     candidates: dict[str, PaperMetadata],
     top_k: int = None,
     client: Optional[anthropic.Anthropic] = None,
+    api_key: Optional[str] = None,
 ) -> list[RelevanceScore]:
     """Score each candidate paper and return the top_k most relevant.
 
@@ -82,7 +80,7 @@ def evaluate_relevance(
     Returns list sorted by relevance_score descending.
     """
     top_k = top_k or config.TOP_K_PAPERS
-    client = client or anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    client = client or anthropic.Anthropic(api_key=api_key or config.ANTHROPIC_KEY)
 
     if not candidates:
         return []
