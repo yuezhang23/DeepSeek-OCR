@@ -234,7 +234,7 @@ def main():
         paper_id=args.pdf_name,
         pdf_path=pdf_path,
         venue=args.venue,
-        output_path=Path(args.output) if args.output else None,
+        output_path= args.output if args.output else None,
         force_rerun=args.force_rerun,
         skip_ocr_related=args.skip_ocr_related,
         markdown_path=markdown_path,
