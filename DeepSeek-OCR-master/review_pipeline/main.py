@@ -208,9 +208,11 @@ def run_pipeline(
         )
         cache.save("review", output_md)
 
-    with open (output_path, "w", encoding="utf-8") as f:
-        f.write(output_md)
-    print(f"\nOutput written to: {output_path}")
+    # output_path is the file path to save the final markdown review.
+    if output_path is not None:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(output_md, encoding="utf-8")
     return str(output_path)
 
 
