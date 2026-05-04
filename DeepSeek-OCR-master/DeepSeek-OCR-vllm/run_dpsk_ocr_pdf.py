@@ -244,6 +244,7 @@ def convert_pdf_to_markdown(paper_id, pdf_path, ocr_output_path):
 
 
     prompt = PROMPT
+    OUTPUT_PATH = ocr_output_path
 
     # batch_inputs = []
 
@@ -319,6 +320,5 @@ if __name__ == "__main__":
     parser.add_argument("--ocr_output_path", type=str, required=True, help="Directory to save OCR outputs")
 
     args = parser.parse_args()
-    OUTPUT_PATH = args.ocr_output_path
 
     convert_pdf_to_markdown(args.paper_id, args.pdf_path, args.ocr_output_path)
