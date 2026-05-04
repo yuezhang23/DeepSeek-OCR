@@ -311,3 +311,13 @@ def convert_pdf_to_markdown(paper_id, pdf_path, ocr_output_path):
     pil_to_pdf_img2pdf(draw_images, pdf_out_path)
     return contents, mmd_path
 
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Convert PDF to Markdown using DeepSeek OCR")
+    parser.add_argument("--paper_id", type=str, required=True, help="Unique identifier for the paper")
+    parser.add_argument("--pdf_path", type=str, required=True, help="Path to the input PDF file")
+    parser.add_argument("--ocr_output_path", type=str, required=True, help="Directory to save OCR outputs")
+
+    args = parser.parse_args()
+
+    convert_pdf_to_markdown(args.paper_id, args.pdf_path, args.ocr_output_path)
