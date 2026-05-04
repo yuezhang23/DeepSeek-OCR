@@ -208,7 +208,8 @@ def run_pipeline(
         )
         cache.save("review", output_md)
 
-    output_path.write_text(output_md, encoding="utf-8")
+    with open (output_path, "w", encoding="utf-8") as f:
+        f.write(output_md)
     print(f"\nOutput written to: {output_path}")
     return str(output_path)
 
