@@ -30,7 +30,7 @@ from process.ngram_norepeat import NoRepeatNGramLogitsProcessor
 from process.image_process import DeepseekOCRProcessor
 
 ModelRegistry.register_model("DeepseekOCRForCausalLM", DeepseekOCRForCausalLM)
-
+OUTPUT_PATH = 'None'
 
 llm = LLM(
     model=MODEL_PATH,
@@ -319,5 +319,6 @@ if __name__ == "__main__":
     parser.add_argument("--ocr_output_path", type=str, required=True, help="Directory to save OCR outputs")
 
     args = parser.parse_args()
+    OUTPUT_PATH = args.ocr_output_path
 
     convert_pdf_to_markdown(args.paper_id, args.pdf_path, args.ocr_output_path)
