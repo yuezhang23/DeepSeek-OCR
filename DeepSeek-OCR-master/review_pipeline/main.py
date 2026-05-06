@@ -221,16 +221,15 @@ def run_pipeline(
         print("\n[Stage 9/9] Scoring paper on 7 quality dimensions...")
         model_dir = cache.dir / "models"
         scoring_model = scorer.DimensionalScoringModel(model_dir=model_dir)
-        scores, final_score = scorer.score_paper(
+        scores = scorer.score_paper(
             paper_md, summaries, client=clients.deepseek, model=scoring_model
         )
         output_md = scorer.format_scores_markdown(
-            scores, final_score, model=scoring_model, venue=venue, year=2026
+            scores, model=scoring_model, venue=venue, year=2026
         )
-        cache.save("dimension_scores", {"scores": scores, "final_score": final_score})
+        cache.save("dimension_scores", scores)
         for dim in scorer.DIMENSIONS:
             print(f"  {scorer.DIMENSION_LABELS[dim]}: {scores[dim]}/10")
-        print(f"  Final score: {final_score:.2f}/10")
     else:
         print(f"\n[Stage 9/9] Generating {venue} 2026 review...")
         _, output_md = reviewer.generate_review(

@@ -140,37 +140,64 @@ each on a 1–10 integer scale. Base your scores on the full paper text and the 
 provided summaries of related work.
 
 Scoring guide:
-  1–2   Very poor / major deficiency
-  3–4   Below average / significant weaknesses
-  5–6   Average / acceptable with weaknesses
-  7–8   Good / above average
-  9–10  Excellent / among the best in the field
+  9–10 (Top 5%): Paradigm-shifting; flawless execution; likely an Oral presentation.
+  7–8 (High Quality): Strong contribution; well-supported; clear "Accept."
+  5–6 (Marginal): Interesting but has flaws in experiments or limited novelty; "Borderline."
+  3–4 (Low Quality): Significant technical errors, lack of clarity, or negligible novelty.
+  1–2 (Non-compliant): Factually incorrect, plagiarized, or completely out of scope.
 """
 
 _SCORING_CRITERIA = """\
 Dimension definitions
 ─────────────────────
-1. Originality (1–10)
-   Novelty and creativity. Does the work go meaningfully beyond prior art?
+    1. Originality & Technical Novelty
+        -- The "Gap" Analysis: Does the work introduce a fundamentally new mechanism (e.g., a novel objective function, architecture, or optimization strategy), or is it a "delta" improvement?
 
-2. Importance of Research Question (1–10)
-   How consequential is the problem? Would solving it move the field forward?
+        -- Creative Synthesis: Does it bridge disparate fields (e.g., Information Theory and Diffusion Models) in a non-obvious way?
 
-3. Claims Well Supported (1–10)
-   Evidence quality. Are claims backed by proofs, experiments, or analysis?
-   Are limitations honestly acknowledged?
+        -- Path-Clearing: Does it challenge established "folk wisdom" in the ML community with a fresh perspective?
 
-4. Soundness of Experiments (1–10)
-   Rigour and reproducibility. Appropriate baselines, ablations, and statistics?
+    2. Significance & Research Impact
+        -- Problem Criticality: Does the research address a major bottleneck (e.g., inference latency, data efficiency, or alignment fragility)?
 
-5. Clarity of Writing (1–10)
-   Readability and organisation. Clear figures, tables, notation, and exposition?
+        -- Breadth of Utility: Are the findings specific to a niche task, or are they generalizable across different modalities (Vision, Language, Robotics)?
 
-6. Value to Research Community (1–10)
-   Practical or theoretical contribution. Will it enable follow-on work?
+        -- Field Evolution: If the claims are true, would this work change how other researchers approach their projects next year?
 
-7. Contextualization Relative to Prior Work (1–10)
-   Accurate and comprehensive treatment of related work. Fair comparisons?
+    3. Empirical & Theoretical Grounding
+        -- Claim-Evidence Alignment: Are the central claims directly supported by the data presented? (e.g., if a paper claims "efficiency," is there a Flops-vs-Accuracy curve?)
+
+        -- Theoretical Rigor: For theoretical papers, are the assumptions realistic? For empirical papers, is the intuition backed by formal analysis?
+
+        -- Transparency: Are "failure cases" discussed with the same level of detail as the successes?
+
+    4. Soundness & Reproducibility
+        -- Baseline Integrity: Are the baselines strong and properly tuned? (Avoidance of "straw-man" comparisons).
+
+        -- Statistical Significance: Are results reported with error bars, multiple seeds, and sensitivity analyses?
+
+        -- Scaling Consistency: Does the method hold up as the model size or data volume increases, or does the advantage vanish at scale?
+
+    5. Exposition & Clarity
+        -- Structure & Flow: Is the "story" of the paper logical? Can a reader grasp the main contribution just by looking at the Abstract, Figure 1, and the Conclusion?
+
+        -- Formalism: Is the mathematical notation standard, precise, and consistent?
+
+        -- Visual Communication: Are charts and tables designed to be informative at a glance, with clear axes, labels, and captions?
+
+    6. Collaborative Value & Open Science
+        -- Resource Contribution: Does the work provide a new, high-quality dataset, a refined benchmark, or a robust codebase?
+
+        -- Heuristic Value: Does the paper provide "lessons learned" or negative results that save the community from future dead-ends?
+
+        -- Ethics & Safety: Does the paper proactively address potential dual-use concerns or biases in its findings?
+
+    7. Contextualization & Literature Mastery
+        -- Historical Accuracy: Does the paper correctly attribute ideas to their original sources, moving beyond just citing the most recent "famous" paper?
+
+        -- Critical Comparison: Does the related work section explain how this work differs conceptually, rather than just listing 20 papers?
+
+        -- Fairness: Does the paper acknowledge contemporaneous work and provide a neutral, objective comparison?
 """
 
 
@@ -252,7 +279,6 @@ _default_model = DimensionalScoringModel()
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
-
 def score_paper(
     paper_md: str,
     summaries: dict,
@@ -290,8 +316,8 @@ def score_paper(
         raise ValueError("Model did not return a tool_use block for dimension scoring.")
 
     scores: DimensionScores = json.loads(tool_call.function.arguments)
-    final = (model or _default_model).predict(scores)
-    return scores, final
+    # final = (model or _default_model).predict(scores)
+    return scores
 
 
 def _build_related_work_context(summaries: dict) -> str:
@@ -337,16 +363,4 @@ def format_scores_markdown(
 |-----------|-------|-----------|
 {chr(10).join(rows)}
 
-## Final Score
-
-**{final_score:.2f} / 10**
-
-> Computed as a weighted linear combination of the 7 dimension scores.
-
-### Linear Model Weights
-
-| Dimension | Weight |
-|-----------|--------|
-{chr(10).join(weight_rows)}
-| **Intercept** | {m.intercept:.3f} |
 """
