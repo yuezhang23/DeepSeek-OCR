@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -168,6 +169,31 @@ def _summarize_full_text(
     return response.choices[0].message.content.strip()
 
 
+def _summarize_one(
+    plan: SummarizationPlan,
+    meta: PaperMetadata,
+    paper_markdown: str,
+    cache_dir: Path,
+    client: OpenAI,
+    ocr_engine,
+) -> PaperSummary:
+    """Summarize a single related paper. Called concurrently from build_all_summaries."""
+    arxiv_id = plan["arxiv_id"]
+    if plan["method"] == "full_text":
+        paper_id = arxiv_id.replace(".", "_")
+        mmd_path = cache_dir / f"{paper_id}.mmd"
+        if mmd_path.exists():
+            related_md = mmd_path.read_text(encoding="utf-8")
+        else:
+            pdf_path = download(arxiv_id, cache_dir)
+            related_md, _ = convert_pdf_to_markdown(paper_id, pdf_path, cache_dir, ocr_engine=ocr_engine)
+        summary_text = _summarize_full_text(meta, related_md, plan["focus_areas"], paper_markdown, client)
+    else:
+        summary_text = _summarize_abstract_only(meta, paper_markdown, client)
+
+    return PaperSummary(arxiv_id=arxiv_id, title=meta["title"], summary=summary_text)
+
+
 def build_all_summaries(
     paper_markdown: str,
     plans: list[SummarizationPlan],
@@ -175,50 +201,40 @@ def build_all_summaries(
     cache_dir: Path,
     client: OpenAI,
     ocr_engine=None,
+    max_workers: int = None,
 ) -> dict[str, PaperSummary]:
-    """Generate summaries for all planned papers.
+    """Generate summaries for all planned papers in parallel.
 
-    For 'full_text' papers: downloads the PDF, runs OCR, then summarizes.
-    For 'abstract_only' papers: summarizes from title + abstract only.
-    Related paper markdowns are cached under cache_dir/<arxiv_id>.mmd.
+    abstract_only summaries (pure API calls) all run concurrently.
+    full_text summaries share the same thread pool; OCR inside them is serialized
+    by vLLM's own queue so GPU contention is handled automatically.
+    max_workers defaults to config.SUMMARY_WORKERS.
     """
+    from review_pipeline import config as _cfg
+    max_workers = max_workers or _cfg.SUMMARY_WORKERS
+
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    valid_plans = [(plan, metadata_map[plan["arxiv_id"]]) for plan in plans if plan["arxiv_id"] in metadata_map]
+    missing = [p["arxiv_id"] for p in plans if p["arxiv_id"] not in metadata_map]
+    for arxiv_id in missing:
+        logger.warning("No metadata for %s, skipping.", arxiv_id)
+
     summaries: dict[str, PaperSummary] = {}
 
-    for plan in plans:
-        arxiv_id = plan["arxiv_id"]
-        meta = metadata_map.get(arxiv_id)
-        if not meta:
-            logger.warning("No metadata for %s, skipping.", arxiv_id)
-            continue
-
-        try:
-            if plan["method"] == "full_text":
-                paper_id = arxiv_id.replace(".", "_")
-                mmd_path = cache_dir / f"{paper_id}.mmd"
-                if mmd_path.exists():
-                    related_md = mmd_path.read_text(encoding="utf-8")
-                else:
-                    pdf_path = download(arxiv_id, cache_dir)
-                    related_md, mmd_path = convert_pdf_to_markdown(paper_id, pdf_path, cache_dir, ocr_engine=ocr_engine)
-                    # mmd_path.write_text(related_md, encoding="utf-8")
-
-                summary_text = _summarize_full_text(
-                    meta, related_md, plan["focus_areas"], paper_markdown, client
-                )
-            else:
-                summary_text = _summarize_abstract_only(meta, paper_markdown, client)
-
-            summaries[arxiv_id] = PaperSummary(
-                arxiv_id=arxiv_id,
-                title=meta["title"],
-                summary=summary_text,
-            )
-            print(f"  Summarized [{plan['method']}]: {meta['title'][:70]}")
-
-        except Exception as exc:
-            logger.warning("Failed to summarize %s: %s", arxiv_id, exc)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_summarize_one, plan, meta, paper_markdown, cache_dir, client, ocr_engine): plan["arxiv_id"]
+            for plan, meta in valid_plans
+        }
+        for fut in as_completed(futures):
+            arxiv_id = futures[fut]
+            try:
+                result = fut.result()
+                summaries[arxiv_id] = result
+                print(f"  Summarized [{next(p['method'] for p, _ in valid_plans if p['arxiv_id'] == arxiv_id)}]: {result['title'][:70]}")
+            except Exception as exc:
+                logger.warning("Failed to summarize %s: %s", arxiv_id, exc)
 
     return summaries

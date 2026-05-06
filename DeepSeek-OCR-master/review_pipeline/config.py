@@ -25,6 +25,14 @@ MAX_FULL_TEXT_PAPERS: int = int(os.getenv("MAX_FULL_TEXT_PAPERS", "5"))
 MAX_TAVILY_RESULTS: int = int(os.getenv("MAX_TAVILY_RESULTS", "5"))
 DEFAULT_VENUE: str = os.getenv("DEFAULT_VENUE", "ICLR")
 
+# Concurrency — tune to stay within API rate limits
+# Stage 4: parallel Tavily search workers (free tier: 1 req/s → keep ≤4)
+TAVILY_SEARCH_WORKERS: int = int(os.getenv("TAVILY_SEARCH_WORKERS", "4"))
+# Stage 8: parallel summary workers per paper (DeepSeek RPM limit → keep ≤8)
+SUMMARY_WORKERS: int = int(os.getenv("SUMMARY_WORKERS", "6"))
+# Batch mode: papers processed in parallel (each paper ~17 DeepSeek calls → keep ≤3)
+PIPELINE_WORKERS: int = int(os.getenv("PIPELINE_WORKERS", "3"))
+
 
 BASE_SIZE = 1024
 IMAGE_SIZE = 640

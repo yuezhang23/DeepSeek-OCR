@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -220,6 +221,75 @@ def run_pipeline(
             shutil.rmtree(output_path)
         output_path.write_text(output_md, encoding="utf-8")
     return str(output_path)
+
+
+def run_pipeline_batch(
+    papers: list[dict],
+    max_workers: int = None,
+    anthropic_api_key: str | None = None,
+    deepseek_api_key: str | None = None,
+    tavily_api_key: str | None = None,
+    ocr_engine=None,
+) -> list[str]:
+    """Process multiple papers in parallel. Returns list of output file paths.
+
+    Each entry in `papers` is a dict of kwargs forwarded to run_pipeline()
+    (paper_id, pdf_path, markdown_path, output_path, venue, …).
+
+    max_workers defaults to config.PIPELINE_WORKERS. Tune it to stay within
+    DeepSeek's rate limit — each paper issues ~17 API calls, so 3 workers
+    means ~51 concurrent requests during Stage 8.
+
+    Example Colab usage::
+
+        from review_pipeline.main import run_pipeline_batch
+        from pathlib import Path
+
+        papers = [
+            dict(paper_id="604", pdf_path=Path("placeholder.pdf"),
+                 markdown_path=Path("/content/.../604.mmd"),
+                 output_path="/content/.../604.md")
+            for name in names[:200]
+            if Path(f".../{name}.mmd").exists()
+        ]
+        results = run_pipeline_batch(
+            papers,
+            anthropic_api_key=ANTHROPIC_API_KEY,
+            deepseek_api_key=DEEPSEEK_API_KEY,
+            tavily_api_key=TAVILY_API_KEY,
+        )
+    """
+    import concurrent.futures
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from review_pipeline import config
+
+    max_workers = max_workers or config.PIPELINE_WORKERS
+
+    common = dict(
+        anthropic_api_key=anthropic_api_key,
+        deepseek_api_key=deepseek_api_key,
+        tavily_api_key=tavily_api_key,
+        ocr_engine=ocr_engine,
+    )
+
+    outputs: list[str] = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(run_pipeline, **{**paper, **common}): paper.get("paper_id", "?")
+            for paper in papers
+        }
+        for fut in concurrent.futures.as_completed(futures):
+            paper_id = futures[fut]
+            try:
+                path = fut.result()
+                outputs.append(path)
+                print(f"  [batch] Done: {paper_id} → {path}")
+            except Exception as exc:
+                print(f"  [batch] Failed: {paper_id}: {exc}")
+                logger.warning("Pipeline failed for %s: %s", paper_id, exc)
+
+    return outputs
 
 
 def main():
