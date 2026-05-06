@@ -32,29 +32,38 @@ from process.image_process import DeepseekOCRProcessor
 ModelRegistry.register_model("DeepseekOCRForCausalLM", DeepseekOCRForCausalLM)
 OUTPUT_PATH = 'None'
 
-llm = LLM(
-    model=MODEL_PATH,
-    hf_overrides={"architectures": ["DeepseekOCRForCausalLM"]},
-    block_size=256,
-    enforce_eager=False,
-    trust_remote_code=True, 
-    max_model_len=8192,
-    swap_space=0,
-    max_num_seqs=MAX_CONCURRENCY,
-    tensor_parallel_size=1,
-    gpu_memory_utilization=0.9,
-    disable_mm_preprocessor_cache=True
-)
+_llm = None
+_sampling_params = None
 
-logits_processors = [NoRepeatNGramLogitsProcessor(ngram_size=20, window_size=50, whitelist_token_ids= {128821, 128822})] #window for fast；whitelist_token_ids: <td>,</td>
 
-sampling_params = SamplingParams(
-    temperature=0.0,
-    max_tokens=8192,
-    logits_processors=logits_processors,
-    skip_special_tokens=False,
-    include_stop_str_in_output=True,
-)
+def build_llm():
+    """Initialize the vLLM engine and sampling params once; return (llm, sampling_params)."""
+    global _llm, _sampling_params
+    if _llm is not None:
+        return _llm, _sampling_params
+
+    _llm = LLM(
+        model=MODEL_PATH,
+        hf_overrides={"architectures": ["DeepseekOCRForCausalLM"]},
+        block_size=256,
+        enforce_eager=False,
+        trust_remote_code=True,
+        max_model_len=8192,
+        swap_space=0,
+        max_num_seqs=MAX_CONCURRENCY,
+        tensor_parallel_size=1,
+        gpu_memory_utilization=0.9,
+        disable_mm_preprocessor_cache=True,
+    )
+    logits_processors = [NoRepeatNGramLogitsProcessor(ngram_size=20, window_size=50, whitelist_token_ids={128821, 128822})]
+    _sampling_params = SamplingParams(
+        temperature=0.0,
+        max_tokens=8192,
+        logits_processors=logits_processors,
+        skip_special_tokens=False,
+        include_stop_str_in_output=True,
+    )
+    return _llm, _sampling_params
 
 
 class Colors:
@@ -233,22 +242,20 @@ def process_single_image(image):
     return cache_item
 
 
-def convert_pdf_to_markdown(paper_id, pdf_path, ocr_output_path):
+def convert_pdf_to_markdown(paper_id, pdf_path, ocr_output_path, llm=None, sampling_params=None):
     os.makedirs(ocr_output_path, exist_ok=True)
     os.makedirs(f'{ocr_output_path}/images', exist_ok=True)
-    
-    print(f'{Colors.RED}PDF loading .....{Colors.RESET}')
 
+    if llm is None or sampling_params is None:
+        llm, sampling_params = build_llm()
+
+    print(f'{Colors.RED}PDF loading .....{Colors.RESET}')
 
     images = pdf_to_images_high_quality(pdf_path)
 
-
-    prompt = PROMPT
     OUTPUT_PATH = ocr_output_path
 
-    # batch_inputs = []
-
-    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:  
+    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
         batch_inputs = list(tqdm(
             executor.map(process_single_image, images),
             total=len(images),

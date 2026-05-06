@@ -79,6 +79,7 @@ def run_pipeline(
     anthropic_api_key: str | None = None,
     deepseek_api_key: str | None = None,
     tavily_api_key: str | None = None,
+    ocr_engine=None,
 ) -> str:
     """Execute all pipeline stages with per-stage caching. Returns output file path."""
     sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -86,7 +87,7 @@ def run_pipeline(
     from review_pipeline import config
     from review_pipeline.cache import StageCache
     from review_pipeline.clients import PipelineClients
-    from review_pipeline import ocr, query_gen, search, arxiv_client, relevance, summarizer, reviewer, scorer
+    from review_pipeline import query_gen, search, arxiv_client, relevance, summarizer, reviewer, scorer
 
     clients = PipelineClients.build(
         anthropic_key=anthropic_api_key,
@@ -103,9 +104,10 @@ def run_pipeline(
         paper_md = markdown_path.read_text(encoding="utf-8")
         cache.save("ocr", paper_md)
     elif force_rerun or not cache.exists("ocr"):
+        from review_pipeline import ocr
         print("\n[Stage 2/9] Converting PDF to Markdown (DeepSeek OCR-2)...")
         ocr_output_path = pdf_path.parent / f"{cache_key}_ocr_output"
-        paper_md, dest_path = ocr.convert_pdf_to_markdown(paper_id, pdf_path, ocr_output_path)
+        paper_md, dest_path = ocr.convert_pdf_to_markdown(paper_id, pdf_path, ocr_output_path, ocr_engine=ocr_engine)
         cache.save("ocr", paper_md)
         print(f"  Saved markdown ({len(paper_md):,} chars)")
     else:
