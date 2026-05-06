@@ -210,8 +210,12 @@ def run_pipeline(
 
     # output_path is the file path to save the final markdown review.
     if output_path is not None:
+        import shutil
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Handle case where output_path exists as a directory
+        if output_path.is_dir():
+            shutil.rmtree(output_path)
         output_path.write_text(output_md, encoding="utf-8")
     return str(output_path)
 
