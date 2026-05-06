@@ -174,6 +174,7 @@ def build_all_summaries(
     metadata_map: dict[str, PaperMetadata],
     cache_dir: Path,
     client: OpenAI,
+    ocr_engine=None,
 ) -> dict[str, PaperSummary]:
     """Generate summaries for all planned papers.
 
@@ -201,7 +202,7 @@ def build_all_summaries(
                     related_md = mmd_path.read_text(encoding="utf-8")
                 else:
                     pdf_path = download(arxiv_id, cache_dir)
-                    related_md, mmd_path = convert_pdf_to_markdown(paper_id, pdf_path, cache_dir)
+                    related_md, mmd_path = convert_pdf_to_markdown(paper_id, pdf_path, cache_dir, ocr_engine=ocr_engine)
                     # mmd_path.write_text(related_md, encoding="utf-8")
 
                 summary_text = _summarize_full_text(

@@ -180,7 +180,7 @@ def run_pipeline(
         print("\n[Stage 8/9] Generating related work summaries...")
         related_cache = cache.dir / "related"
         summaries = summarizer.build_all_summaries(
-            paper_md, plans, metadata_map, cache_dir=related_cache, client=clients.deepseek 
+            paper_md, plans, metadata_map, cache_dir=related_cache, client=clients.deepseek, ocr_engine=ocr_engine
         )
         cache.save("summaries", summaries)
         print(f"  Summarized {len(summaries)} papers")
