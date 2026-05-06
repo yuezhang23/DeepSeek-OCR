@@ -253,6 +253,7 @@ def convert_pdf_to_markdown(paper_id, pdf_path, ocr_output_path, llm=None, sampl
 
     images = pdf_to_images_high_quality(pdf_path)
 
+    global OUTPUT_PATH
     OUTPUT_PATH = ocr_output_path
 
     with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
