@@ -20,16 +20,55 @@ logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate an ICLR-style peer review for a research paper PDF."
+        description="Generate ICLR-style peer reviews for one or more research papers.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Batch examples:
+  # All .mmd files found recursively under a directory:
+  python -m review_pipeline.main --markdown-dir /content/pdf2md --output-dir /content/reviews
+
+  # Explicit list of files:
+  python -m review_pipeline.main --markdown 604.mmd 817.mmd --output-dir /content/reviews
+
+  # Single file (original behaviour):
+  python -m review_pipeline.main --markdown paper.mmd --output review.md
+""",
     )
-    parser.add_argument("--pdf", help="Path to the input paper PDF.")
-    parser.add_argument("--pdf_name", default=None, help="Unique name/ID for the paper (defaults to PDF stem).")
-    parser.add_argument("--venue", default="ICLR", help="Target venue (default: ICLR).")
-    parser.add_argument("--output", default=None, help="Output path for the review markdown.")
+    # ── Input ────────────────────────────────────────────────────────────────
+    parser.add_argument("--pdf", default=None, help="Path to a single input PDF (used when --markdown is absent).")
+    parser.add_argument("--pdf_name", default=None, help="Paper ID for a single PDF run (defaults to PDF stem).")
     parser.add_argument(
         "--markdown",
+        nargs="+",
         default=None,
-        help="Path to an existing .mmd markdown file for the paper. Skips OCR entirely.",
+        metavar="FILE",
+        help="One or more .mmd markdown files. Skips OCR. For a single file you may also pass --output.",
+    )
+    parser.add_argument(
+        "--markdown-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory to search for .mmd files (searched recursively). "
+            "Mutually exclusive with --markdown."
+        ),
+    )
+    # ── Output ───────────────────────────────────────────────────────────────
+    parser.add_argument("--output", default=None, help="Output path for a single-file run.")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="DIR",
+        help="Output directory for batch runs. Review files are written as <stem>.md inside this dir.",
+    )
+    # ── Pipeline options ─────────────────────────────────────────────────────
+    parser.add_argument("--venue", default="ICLR", help="Target venue (default: ICLR).")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of papers to process in parallel (default: PIPELINE_WORKERS from config).",
     )
     parser.add_argument(
         "--force-rerun",
@@ -49,22 +88,10 @@ def parse_args() -> argparse.Namespace:
             "quality dimensions and compute a final score via linear regression."
         ),
     )
-    # API keys — override env vars / config.py values
-    parser.add_argument(
-        "--anthropic-api-key",
-        default=None,
-        help="Anthropic API key (defaults to ANTHROPIC_API_KEY env var).",
-    )
-    parser.add_argument(
-        "--deepseek-api-key",
-        default=None,
-        help="DeepSeek API key (defaults to DEEPSEEK_API_KEY env var).",
-    )
-    parser.add_argument(
-        "--tavily-api-key",
-        default=None,
-        help="Tavily API key (defaults to TAVILY_API_KEY env var).",
-    )
+    # ── API keys ─────────────────────────────────────────────────────────────
+    parser.add_argument("--anthropic-api-key", default=None, help="Anthropic API key.")
+    parser.add_argument("--deepseek-api-key", default=None, help="DeepSeek API key.")
+    parser.add_argument("--tavily-api-key", default=None, help="Tavily API key.")
     return parser.parse_args()
 
 
@@ -247,10 +274,10 @@ def run_pipeline_batch(
 
         papers = [
             dict(paper_id="604", pdf_path=Path("placeholder.pdf"),
-                 markdown_path=Path("/content/.../604.mmd"),
+                 markdown_path=Path("/content/.../604.md"),
                  output_path="/content/.../604.md")
             for name in names[:200]
-            if Path(f".../{name}.mmd").exists()
+            if Path(f".../{name}.md").exists()
         ]
         results = run_pipeline_batch(
             papers,
@@ -271,7 +298,6 @@ def run_pipeline_batch(
         tavily_api_key=tavily_api_key,
         ocr_engine=ocr_engine,
     )
-
     outputs: list[str] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -295,34 +321,92 @@ def run_pipeline_batch(
 def main():
     args = parse_args()
 
-    markdown_path = None
-    pdf_path = None
-    if args.markdown:
-        markdown_path = Path(args.markdown)
-        pdf_path = Path(args.pdf) if args.pdf else Path("placeholder.pdf")
-    else:
+    api_kwargs = dict(
+        anthropic_api_key=args.anthropic_api_key,
+        deepseek_api_key=args.deepseek_api_key,
+        tavily_api_key=args.tavily_api_key,
+    )
+    pipeline_kwargs = dict(
+        venue=args.venue,
+        force_rerun=args.force_rerun,
+        skip_ocr_related=args.skip_ocr_related,
+        score_dimensions=args.score_dimensions,
+        **api_kwargs,
+    )
+
+    # ── Collect markdown files ────────────────────────────────────────────────
+    md_files: list[Path] = []
+
+    if args.markdown_dir and args.markdown:
+        print("Error: --markdown-dir and --markdown are mutually exclusive.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.markdown_dir:
+        md_dir = Path(args.markdown_dir)
+        if not md_dir.is_dir():
+            print(f"Error: --markdown-dir is not a directory: {md_dir}", file=sys.stderr)
+            sys.exit(1)
+        md_files = sorted(md_dir.rglob("*.md"))
+        if not md_files:
+            print(f"Error: no .md files found under {md_dir}", file=sys.stderr)
+            sys.exit(1)
+
+    elif args.markdown:
+        for p in args.markdown:
+            path = Path(p)
+            if not path.exists():
+                print(f"Warning: markdown file not found, skipping: {path}", file=sys.stderr)
+            else:
+                md_files.append(path)
+        if not md_files:
+            print("Error: none of the provided --markdown files exist.", file=sys.stderr)
+            sys.exit(1)
+
+    # ── Single-file mode (PDF without markdown) ───────────────────────────────
+    if not md_files:
         if not args.pdf:
-            print("Error: --pdf is required when --markdown is not provided.", file=sys.stderr)
+            print("Error: provide --markdown, --markdown-dir, or --pdf.", file=sys.stderr)
             sys.exit(1)
         pdf_path = Path(args.pdf)
         if not pdf_path.exists():
             print(f"Error: PDF not found: {pdf_path}", file=sys.stderr)
             sys.exit(1)
+        output = run_pipeline(
+            paper_id=args.pdf_name,
+            pdf_path=pdf_path,
+            output_path=args.output,
+            **pipeline_kwargs,
+        )
+        print(f"\nDone. Output saved to: {output}")
+        return
 
-    output = run_pipeline(
-        paper_id=args.pdf_name,
-        pdf_path=pdf_path,
-        venue=args.venue,
-        output_path= args.output if args.output else None,
-        force_rerun=args.force_rerun,
-        skip_ocr_related=args.skip_ocr_related,
-        markdown_path=markdown_path,
-        score_dimensions=args.score_dimensions,
-        anthropic_api_key=args.anthropic_api_key,
-        deepseek_api_key=args.deepseek_api_key,
-        tavily_api_key=args.tavily_api_key,
-    )
-    print(f"\nDone. Output saved to: {output}")
+    # ── Batch mode ────────────────────────────────────────────────────────────
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    papers = []
+    for md_path in md_files:
+        stem = md_path.stem
+        out_path = (output_dir / f"{stem}.md") if output_dir else None
+        if out_path and out_path.exists():
+            print(f"  Skipping {stem} — output already exists.")
+            continue
+        papers.append(dict(
+            paper_id=stem,
+            pdf_path=Path("placeholder.pdf"),
+            markdown_path=md_path,
+            output_path=str(out_path) if out_path else None,
+            **pipeline_kwargs,
+        ))
+
+    if not papers:
+        print("All papers already have output files. Nothing to do.")
+        return
+
+    print(f"\nBatch: {len(papers)} papers, {args.workers or 'default'} workers.\n")
+    results = run_pipeline_batch(papers, max_workers=args.workers, **api_kwargs)
+    print(f"\nDone. {len(results)} reviews written.")
 
 
 if __name__ == "__main__":
