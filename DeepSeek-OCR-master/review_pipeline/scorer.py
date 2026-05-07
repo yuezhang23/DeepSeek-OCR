@@ -300,7 +300,7 @@ def score_paper(
         "one-sentence rationale for each dimension."
     )
 
-    response = client.chat.completions.create(
+    call_kwargs: dict = dict(
         model=config.DEEPSEEK_MODEL,
         max_tokens=1024,
         messages=[
@@ -308,8 +308,14 @@ def score_paper(
             {"role": "user", "content": user_message},
         ],
         tools=[_SCORE_TOOL],
-        tool_choice={"type": "function", "function": {"name": "submit_dimension_scores"}},
+        tool_choice="auto",
+        extra_body={"thinking_mode": "thinking"},
     )
+    # deepseek-reasoner only supports tool_choice "none"/"auto", not forced function
+    if "reasoner" not in config.DEEPSEEK_MODEL.lower():
+        call_kwargs["tool_choice"] = {"type": "function", "function": {"name": "submit_dimension_scores"}}
+
+    response = client.chat.completions.create(**call_kwargs)
 
     tool_call = response.choices[0].message.tool_calls[0]
     if tool_call is None:
