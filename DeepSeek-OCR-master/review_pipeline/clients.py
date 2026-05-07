@@ -24,7 +24,7 @@ def deepseek_chat(
     max_tokens: int,
     tools: list[dict] | None = None,
     tool_choice: Any = "auto",
-    thinking: bool = True,
+    thinking: bool = False,
 ):
     """Thin wrapper around client.chat.completions.create with DeepSeek defaults.
 
