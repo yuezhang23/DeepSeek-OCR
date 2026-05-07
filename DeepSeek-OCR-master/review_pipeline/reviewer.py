@@ -9,7 +9,9 @@ from typing import TypedDict
 from openai import OpenAI
 
 from review_pipeline import config
+from review_pipeline.clients import deepseek_chat
 from review_pipeline.summarizer import PaperSummary
+from review_pipeline.tools import REVIEW_TOOL as _REVIEW_TOOL
 
 RATING_LABELS = {
     1: "Very Strong Reject: For instance, a paper with incorrect statements, improper (e.g., offensive) language, unaddressed ethical considerations, incorrect results and/or flawed methodology (e.g., training using a test set).",
@@ -41,7 +43,10 @@ making vague claims. You assess novelty, technical soundness, experimental rigor
 clarity, and broader impact.
 """
 
-_ICLR_CRITERIA = """\
+def _build_scoring_rubric() -> str:
+    rating_lines = "\n".join(f"  {k}/10 — {v}" for k, v in RATING_LABELS.items())
+    confidence_lines = "\n".join(f"  {k}/5 — {v}" for k, v in CONFIDENCE_LABELS.items())
+    return f"""\
 ICLR 2026 REVIEW CRITERIA:
 - Novelty: Does the paper make a new contribution to the field?
 - Technical soundness: Are the methods and proofs correct? Are experiments reproducible?
@@ -49,66 +54,16 @@ ICLR 2026 REVIEW CRITERIA:
 - Clarity: Is the paper well-written and easy to follow?
 - Experimental evaluation: Are baselines fair and sufficient? Are ablations convincing?
 - Related work: Is prior work appropriately cited and compared against?
+
+RATING SCALE (choose an integer 1–10):
+{rating_lines}
+
+CONFIDENCE SCALE (choose an integer 1–5):
+{confidence_lines}
 """
 
-_REVIEW_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "submit_review",
-        "description": "Submit the completed ICLR peer review.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": "3-5 sentence summary of the paper's main contributions and approach.",
-                },
-                "strengths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of specific strengths (3-6 items).",
-                    "minItems": 2,
-                },
-                "weaknesses": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "List of specific weaknesses or concerns (3-6 items).",
-                    "minItems": 2,
-                },
-                "questions": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Specific questions for the authors to address (2-5 items).",
-                    "minItems": 1,
-                },
-                "limitations_and_societal_impact": {
-                    "type": "string",
-                    "description": "Assessment of limitations acknowledged by the authors and potential societal impact.",
-                },
-                "rating": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10,
-                    "description": "Overall rating: 1=Strong Reject, 5=Borderline Accept, 8=Strong Accept, 10=Outstanding.",
-                },
-                "confidence": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 5,
-                    "description": "Reviewer confidence: 1=educated guess, 5=absolutely certain.",
-                },
-                "ethics_flag": {
-                    "type": "boolean",
-                    "description": "True if the paper raises significant ethical concerns requiring committee review.",
-                },
-            },
-            "required": [
-                "summary", "strengths", "weaknesses", "questions",
-                "limitations_and_societal_impact", "rating", "confidence", "ethics_flag",
-            ],
-        },
-    },
-}
+
+_ICLR_CRITERIA = _build_scoring_rubric()
 
 
 class ILCRReview(TypedDict):
@@ -143,16 +98,12 @@ def generate_review(
         f"Use the submit_review tool."
     )
 
-    response = client.chat.completions.create(
-        model=config.DEEPSEEK_MODEL,
+    response = deepseek_chat(
+        client,
+        system=system_content,
+        user=user_message,
         max_tokens=4096,
-        messages=[
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_message},
-        ],
         tools=[_REVIEW_TOOL],
-        tool_choice="auto",
-        extra_body={"thinking_mode": "thinking"},
     )
 
     tool_call = response.choices[0].message.tool_calls[0]

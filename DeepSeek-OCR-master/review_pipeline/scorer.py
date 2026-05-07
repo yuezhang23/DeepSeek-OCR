@@ -17,20 +17,12 @@ import numpy as np
 from openai import OpenAI
 
 from review_pipeline import config
+from review_pipeline.clients import deepseek_chat
+from review_pipeline.tools import DIMENSIONS, SCORE_TOOL as _SCORE_TOOL
 
 logger = logging.getLogger(__name__)
 
 # ─── Dimension registry ───────────────────────────────────────────────────────
-
-DIMENSIONS = [
-    "originality",
-    "importance_of_research_question",
-    "claims_well_supported",
-    "soundness_of_experiments",
-    "clarity_of_writing",
-    "value_to_research_community",
-    "contextualization_relative_to_prior_work",
-]
 
 DIMENSION_LABELS = {
     "originality": "Originality",
@@ -40,37 +32,6 @@ DIMENSION_LABELS = {
     "clarity_of_writing": "Clarity of Writing",
     "value_to_research_community": "Value to Research Community",
     "contextualization_relative_to_prior_work": "Contextualization Relative to Prior Work",
-}
-
-_DIMENSION_DESCRIPTIONS = {
-    "originality": (
-        "How novel and creative is the work? Does it introduce genuinely new ideas, "
-        "methods, or perspectives rather than incremental improvements?"
-    ),
-    "importance_of_research_question": (
-        "How important is the problem being addressed? Would solving it have a "
-        "significant impact on the field or downstream applications?"
-    ),
-    "claims_well_supported": (
-        "Are the paper's claims backed by sufficient evidence, proofs, or experiments? "
-        "Are limitations honestly acknowledged?"
-    ),
-    "soundness_of_experiments": (
-        "Are experiments well-designed, reproducible, and statistically sound? "
-        "Are baselines, ablations, and metrics appropriate?"
-    ),
-    "clarity_of_writing": (
-        "Is the paper well-written and well-organised? "
-        "Are figures, tables, and notation clear and easy to follow?"
-    ),
-    "value_to_research_community": (
-        "What practical or theoretical value does this work provide? "
-        "Will it enable or accelerate future research or real-world applications?"
-    ),
-    "contextualization_relative_to_prior_work": (
-        "Does the paper accurately characterise and compare to relevant prior work? "
-        "Is the related-work section comprehensive and fair?"
-    ),
 }
 
 # ─── Default linear-regression weights ───────────────────────────────────────
@@ -93,40 +54,6 @@ class DimensionScores(TypedDict):
     contextualization_relative_to_prior_work: int
     rationale: dict[str, str]
 
-
-# ─── Tool definition ─────────────────────────────────────────────────────────
-
-_SCORE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "submit_dimension_scores",
-        "description": (
-            "Submit quality scores for the paper across 7 evaluation dimensions. "
-            "Each score is an integer from 1 (very poor) to 10 (excellent)."
-        ),
-        "parameters": {
-            "type": "object",
-            "required": DIMENSIONS + ["rationale"],
-            "properties": {
-                **{
-                    dim: {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 10,
-                        "description": _DIMENSION_DESCRIPTIONS[dim],
-                    }
-                    for dim in DIMENSIONS
-                },
-                "rationale": {
-                    "type": "object",
-                    "description": "One-sentence justification for each dimension score.",
-                    "required": DIMENSIONS,
-                    "properties": {dim: {"type": "string"} for dim in DIMENSIONS},
-                },
-            },
-        },
-    },
-}
 
 # ─── System prompts ───────────────────────────────────────────────────────────
 
@@ -300,22 +227,19 @@ def score_paper(
         "one-sentence rationale for each dimension."
     )
 
-    call_kwargs: dict = dict(
-        model=config.DEEPSEEK_MODEL,
-        max_tokens=1024,
-        messages=[
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_message},
-        ],
-        tools=[_SCORE_TOOL],
-        tool_choice="auto",
-        extra_body={"thinking_mode": "thinking"},
+    # deepseek-reasoner only supports "auto", not a forced function name
+    tool_choice = (
+        "auto" if "reasoner" in config.DEEPSEEK_MODEL.lower()
+        else {"type": "function", "function": {"name": "submit_dimension_scores"}}
     )
-    # deepseek-reasoner only supports tool_choice "none"/"auto", not forced function
-    if "reasoner" not in config.DEEPSEEK_MODEL.lower():
-        call_kwargs["tool_choice"] = {"type": "function", "function": {"name": "submit_dimension_scores"}}
-
-    response = client.chat.completions.create(**call_kwargs)
+    response = deepseek_chat(
+        client,
+        system=system_content,
+        user=user_message,
+        max_tokens=1024,
+        tools=[_SCORE_TOOL],
+        tool_choice=tool_choice,
+    )
 
     tool_call = response.choices[0].message.tool_calls[0]
     if tool_call is None:

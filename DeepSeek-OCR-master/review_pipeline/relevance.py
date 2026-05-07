@@ -12,54 +12,13 @@ from openai import OpenAI
 
 from review_pipeline import config
 from review_pipeline.arxiv_client import PaperMetadata
+from review_pipeline.clients import deepseek_chat
+from review_pipeline.tools import RELEVANCE_TOOL as _RELEVANCE_TOOL
 
 _SYSTEM_PREAMBLE = """\
 You are an expert academic paper reviewer. You will be given the full text of a research paper \
 (the "target paper") and a list of candidate related papers (title + abstract only). Your task \
 is to score each candidate's relevance to the target paper for the purpose of grounding a peer review."""
-
-_RELEVANCE_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "submit_relevance_scores",
-        "description": "Submit relevance scores for each candidate paper.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "scores": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "arxiv_id": {"type": "string"},
-                            "relevance_score": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 10,
-                                "description": "1=unrelated, 10=directly comparable / must-cite",
-                            },
-                            "relevance_reason": {
-                                "type": "string",
-                                "description": "One sentence explaining the relationship.",
-                            },
-                            "relationship_type": {
-                                "type": "string",
-                                "enum": ["baseline", "competitor", "technique", "related"],
-                            },
-                        },
-                        "required": [
-                            "arxiv_id",
-                            "relevance_score",
-                            "relevance_reason",
-                            "relationship_type",
-                        ],
-                    },
-                },
-            },
-            "required": ["scores"],
-        },
-    },
-}
 
 
 class RelevanceScore(TypedDict):
@@ -109,19 +68,18 @@ def evaluate_relevance(
         + "\n".join(candidate_lines)
     )
 
-    response = client.chat.completions.create(
-        model=config.DEEPSEEK_MODEL,
+    response = deepseek_chat(
+        client,
+        system=_SYSTEM_PREAMBLE + "\n\n" + paper_markdown,
+        user=user_message,
         max_tokens=4096,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PREAMBLE + "\n\n" + paper_markdown},
-            {"role": "user", "content": user_message},
-        ],
         tools=[_RELEVANCE_TOOL],
-        tool_choice="auto",
-        extra_body={"thinking_mode": "thinking"},
     )
 
-    tool_call = response.choices[0].message.tool_calls[0]
+    tool_calls = response.choices[0].message.tool_calls
+    if not tool_calls:
+        return []
+    tool_call = tool_calls[0]
     raw_scores: list[dict] = json.loads(tool_call.function.arguments).get("scores", [])
 
     results: list[RelevanceScore] = []

@@ -11,48 +11,14 @@ import json
 from openai import OpenAI
 
 from review_pipeline import config
+from review_pipeline.clients import deepseek_chat
+from review_pipeline.tools import QUERY_TOOL as _QUERY_TOOL
 
 _SYSTEM_PREAMBLE = """\
 You are an expert academic paper analyst helping to ground a paper review in prior work.
 You will be given the full text of a research paper (converted from PDF to Markdown).
 Your task: analyze the paper and generate arXiv search queries to find the most relevant related work.
 """
-
-# OpenAI-compatible function-calling tool definition
-_QUERY_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "submit_search_queries",
-        "description": "Submit the generated arXiv search queries for the paper review pipeline.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "benchmark_queries": {
-                    "type": "array",
-                    "description": "Queries targeting benchmarks and baselines used or mentioned in the paper.",
-                    "items": {"type": "string"},
-                    "minItems": 3,
-                    "maxItems": 5,
-                },
-                "problem_queries": {
-                    "type": "array",
-                    "description": "Queries targeting papers that address the same problem or task.",
-                    "items": {"type": "string"},
-                    "minItems": 3,
-                    "maxItems": 5,
-                },
-                "technique_queries": {
-                    "type": "array",
-                    "description": "Queries targeting papers that use related techniques or methods.",
-                    "items": {"type": "string"},
-                    "minItems": 3,
-                    "maxItems": 5,
-                },
-            },
-            "required": ["benchmark_queries", "problem_queries", "technique_queries"],
-        },
-    },
-}
 
 
 def generate_search_queries(
@@ -80,16 +46,12 @@ def generate_search_queries(
         f"suitable for searching arXiv. Avoid overly generic terms."
     )
 
-    response = client.chat.completions.create(
-        model=config.DEEPSEEK_MODEL,
+    response = deepseek_chat(
+        client,
+        system=_SYSTEM_PREAMBLE + "\n\n" + paper_markdown,
+        user=user_message,
         max_tokens=1024,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PREAMBLE + "\n\n" + paper_markdown},
-            {"role": "user", "content": user_message},
-        ],
         tools=[_QUERY_TOOL],
-        tool_choice="auto",
-        extra_body={"thinking_mode": "thinking"},
     )
 
     tool_call = response.choices[0].message.tool_calls[0]

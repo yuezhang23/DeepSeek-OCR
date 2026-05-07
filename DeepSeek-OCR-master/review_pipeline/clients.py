@@ -8,12 +8,46 @@ should construct API clients directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import anthropic
 from openai import OpenAI
 from tavily import TavilyClient
 
 from review_pipeline import config
+
+
+def deepseek_chat(
+    client: OpenAI,
+    system: str,
+    user: str,
+    max_tokens: int,
+    tools: list[dict] | None = None,
+    tool_choice: Any = "auto",
+    thinking: bool = True,
+):
+    """Thin wrapper around client.chat.completions.create with DeepSeek defaults.
+
+    Args:
+        tools:       Pass a list to enable function calling; omit or None to skip.
+        tool_choice: Only used when tools is provided. Defaults to "auto".
+        thinking:    Set True to enable chain-of-thought (thinking_mode=thinking).
+                     Set False for simple completion calls (e.g. short summaries).
+    """
+    kwargs: dict[str, Any] = dict(
+        model=config.DEEPSEEK_MODEL,
+        max_tokens=max_tokens,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    )
+    if tools is not None:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = tool_choice
+    if thinking:
+        kwargs["extra_body"] = {"thinking": "enabled"}
+    return client.chat.completions.create(**kwargs)
 
 
 @dataclass

@@ -14,8 +14,10 @@ from openai import OpenAI
 
 from review_pipeline import config
 from review_pipeline.arxiv_client import PaperMetadata, download
+from review_pipeline.clients import deepseek_chat
 from review_pipeline.relevance import RelevanceScore
 from review_pipeline.ocr import convert_pdf_to_markdown
+from review_pipeline.tools import PLAN_TOOL as _PLAN_TOOL
 
 logger = logging.getLogger(__name__)
 
@@ -25,39 +27,6 @@ research paper (the "target paper") and are helping to summarize related work \
 for a peer review. Summaries should be accurate, concise, and focused on aspects \
 that are most relevant to evaluating the target paper.
 """
-
-_PLAN_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "submit_summarization_plan",
-        "description": "Submit the summarization plan for each related paper.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "plans": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "arxiv_id": {"type": "string"},
-                            "method": {
-                                "type": "string",
-                                "enum": ["abstract_only", "full_text"],
-                            },
-                            "focus_areas": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "For full_text papers: list specific aspects to focus on.",
-                            },
-                        },
-                        "required": ["arxiv_id", "method", "focus_areas"],
-                    },
-                },
-            },
-            "required": ["plans"],
-        },
-    },
-}
 
 
 class SummarizationPlan(TypedDict):
@@ -102,16 +71,12 @@ def plan_summarization(
         + paper_list
     )
 
-    response = client.chat.completions.create(
-        model=config.DEEPSEEK_MODEL,
+    response = deepseek_chat(
+        client,
+        system=_SYSTEM_PREAMBLE + "\n\n" + paper_markdown,
+        user=user_message,
         max_tokens=2048,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PREAMBLE + "\n\n" + paper_markdown},
-            {"role": "user", "content": user_message},
-        ],
         tools=[_PLAN_TOOL],
-        tool_choice="auto",
-        extra_body={"thinking_mode": "thinking"},
     )
 
     tool_call = response.choices[0].message.tool_calls[0]
@@ -132,13 +97,12 @@ def _summarize_abstract_only(
         f"Authors: {', '.join(meta['authors'][:5])}\n"
         f"Abstract: {meta['abstract']}"
     )
-    response = client.chat.completions.create(
-        model=config.DEEPSEEK_MODEL,
+    response = deepseek_chat(
+        client,
+        system=_SYSTEM_PREAMBLE + "\n\n" + paper_markdown,
+        user=prompt,
         max_tokens=512,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PREAMBLE + "\n\n" + paper_markdown},
-            {"role": "user", "content": prompt},
-        ],
+        thinking=False,
     )
     return response.choices[0].message.content.strip()
 
@@ -158,13 +122,12 @@ def _summarize_full_text(
         f"Authors: {', '.join(meta['authors'][:5])}\n\n"
         f"--- FULL PAPER TEXT ---\n{related_markdown[:40000]}"
     )
-    response = client.chat.completions.create(
-        model=config.DEEPSEEK_MODEL,
+    response = deepseek_chat(
+        client,
+        system=_SYSTEM_PREAMBLE + "\n\n" + paper_markdown,
+        user=prompt,
         max_tokens=1024,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PREAMBLE + "\n\n" + paper_markdown},
-            {"role": "user", "content": prompt},
-        ],
+        thinking=False,
     )
     return response.choices[0].message.content.strip()
 
