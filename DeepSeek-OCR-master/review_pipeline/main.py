@@ -126,7 +126,7 @@ def run_pipeline(
     cache_key = paper_id or (markdown_path.stem if markdown_path else pdf_path.stem)
     cache = StageCache(cache_key, config.CACHE_DIR)
 
-    # ── Stage 2: OCR ─────────────────────────────────────────────────────────
+    # ── Stage 2: Markdwon or OCR ─────────────────────────────────────────────────────────
     if markdown_path is not None:
         print(f"\n[Stage 2/9] Using provided markdown file: {markdown_path}")
         paper_md = markdown_path.read_text(encoding="utf-8")
@@ -203,7 +203,7 @@ def run_pipeline(
         print("\n[Stage 7/9] Summarization plan cache hit.")
         plans = cache.load("summarization_plan")
 
-    # ── Stage 8: Generate Summaries (DeepSeek) ──────────────────────────────────
+    # ── Stage 8: Generate Summaries (DeepSeek + OCR) ──────────────────────────────────
     if force_rerun or not cache.exists("summaries"):
         print("\n[Stage 8/9] Generating related work summaries...")
         related_cache = cache.dir / "related"

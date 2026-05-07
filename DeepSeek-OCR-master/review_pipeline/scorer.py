@@ -238,7 +238,6 @@ def score_paper(
         user=user_message,
         max_tokens=1024,
         tools=[_SCORE_TOOL],
-        tool_choice=tool_choice,
     )
 
     tool_call = response.choices[0].message.tool_calls[0]
