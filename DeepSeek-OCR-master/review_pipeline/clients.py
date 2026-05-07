@@ -46,7 +46,7 @@ def deepseek_chat(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = tool_choice
     if thinking:
-        kwargs["extra_body"] = {"thinking": "enabled"}
+        kwargs["extra_body"] = {"thinking": "thinking"}
     return client.chat.completions.create(**kwargs)
 
 
