@@ -5,7 +5,6 @@ used throughout the review pipeline.
 from __future__ import annotations
 
 # ── Dimension registry (shared with scorer.py) ────────────────────────────────
-
 DIMENSIONS = [
     "originality",
     "importance_of_research_question",
@@ -48,7 +47,6 @@ _DIMENSION_DESCRIPTIONS = {
 }
 
 # ── Stage 3: arXiv query generation ──────────────────────────────────────────
-
 QUERY_TOOL = {
     "type": "function",
     "function": {
@@ -78,6 +76,7 @@ QUERY_TOOL = {
                     "minItems": 3,
                     "maxItems": 5,
                 },
+
             },
             "required": ["benchmark_queries", "problem_queries", "technique_queries"],
         },
@@ -85,7 +84,6 @@ QUERY_TOOL = {
 }
 
 # ── Stage 6: relevance scoring ────────────────────────────────────────────────
-
 RELEVANCE_TOOL = {
     "type": "function",
     "function": {
@@ -130,7 +128,6 @@ RELEVANCE_TOOL = {
 }
 
 # ── Stage 7: summarization planning ──────────────────────────────────────────
-
 PLAN_TOOL = {
     "type": "function",
     "function": {
@@ -165,7 +162,6 @@ PLAN_TOOL = {
 }
 
 # ── Stage 9a: ICLR-style peer review ─────────────────────────────────────────
-
 REVIEW_TOOL = {
     "type": "function",
     "function": {
@@ -226,39 +222,111 @@ REVIEW_TOOL = {
 }
 
 # ── Stage 9b: dimensional quality scoring ────────────────────────────────────
-
+# Per-dimension schema is a NESTED object whose `rationale` field is declared
+# (and emitted) BEFORE `score`. This enforces "reason before score" at the
+# decoder level — the integer cannot be produced until the rationale tokens
+# have been generated. Without this, the model commits to a number first and
+# rationalises after, which defeats the design.
 SCORE_TOOL = {
     "type": "function",
     "function": {
         "name": "submit_dimension_scores",
         "description": (
             "Submit quality scores for the paper across 7 evaluation dimensions. "
-            "Each score is an integer from 1 (very poor) to 10 (excellent)."
+            "For every dimension, emit the `rationale` field BEFORE the `score` "
+            "field — the integer score must be a conclusion of the rationale you "
+            "just wrote, not a number picked first and justified after. "
+            "Scores are integers from 1 (very poor) to 10 (excellent)."
         ),
         "parameters": {
             "type": "object",
-            "required": DIMENSIONS + ["rationale"],
+            "required": list(DIMENSIONS),
             "properties": {
-                **{
-                    dim: {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 10,
-                        "description": _DIMENSION_DESCRIPTIONS[dim],
-                    }
-                    for dim in DIMENSIONS
-                },
-                "rationale": {
+                dim: {
                     "type": "object",
-                    "description": "One-sentence justification for each dimension score.",
-                    "required": DIMENSIONS,
-                    "properties": {dim: {"type": "string"} for dim in DIMENSIONS},
-                },
+                    "description": _DIMENSION_DESCRIPTIONS[dim],
+                    "required": ["rationale", "score"],
+                    "properties": {
+                        "rationale": {
+                            "type": "string",
+                            "description": (
+                                "2–4 sentence evidence-grounded justification, "
+                                "written BEFORE choosing this dimension's score. "
+                                "Cite specific sections, figures, claims, or "
+                                "baselines from the paper."
+                            ),
+                        },
+                        "score": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                            "description": (
+                                "Integer 1–10 that follows from the rationale "
+                                "above. Do not anchor on a number — let the "
+                                "rationale you just wrote determine it."
+                            ),
+                        },
+                    },
+                }
+                for dim in DIMENSIONS
             },
         },
     },
 }
 
 # ── Convenience list of all tools ────────────────────────────────────────────
-
 ALL_TOOLS = [QUERY_TOOL, RELEVANCE_TOOL, PLAN_TOOL, REVIEW_TOOL, SCORE_TOOL]
+
+
+
+_SCORING_CRITERIA = """\
+Dimension definitions and evaluation criteria:
+    1. Originality & Technical Novelty
+        -- The "Gap" Analysis: Does the work introduce a fundamentally new mechanism (e.g., a novel objective function, architecture, or optimization strategy), or is it a "delta" improvement?
+
+        -- Creative Synthesis: Does it bridge disparate fields (e.g., Information Theory and Diffusion Models) in a non-obvious way?
+
+        -- Path-Clearing: Does it challenge established "folk wisdom" in the ML community with a fresh perspective?
+
+    2. Significance & Research Impact
+        -- Problem Criticality: Does the research address a major bottleneck (e.g., inference latency, data efficiency, or alignment fragility)?
+
+        -- Breadth of Utility: Are the findings specific to a niche task, or are they generalizable across different modalities (Vision, Language, Robotics)?
+
+        -- Field Evolution: If the claims are true, would this work change how other researchers approach their projects next year?
+
+    3. Empirical & Theoretical Grounding
+        -- Claim-Evidence Alignment: Are the central claims directly supported by the data presented? (e.g., if a paper claims "efficiency," is there a Flops-vs-Accuracy curve?)
+
+        -- Theoretical Rigor: For theoretical papers, are the assumptions realistic? For empirical papers, is the intuition backed by formal analysis?
+
+        -- Transparency: Are "failure cases" discussed with the same level of detail as the successes?
+
+    4. Soundness & Reproducibility
+        -- Baseline Integrity: Are the baselines strong and properly tuned? (Avoidance of "straw-man" comparisons).
+
+        -- Statistical Significance: Are results reported with error bars, multiple seeds, and sensitivity analyses?
+
+        -- Scaling Consistency: Does the method hold up as the model size or data volume increases, or does the advantage vanish at scale?
+
+    5. Exposition & Clarity
+        -- Structure & Flow: Is the "story" of the paper logical? Can a reader grasp the main contribution just by looking at the Abstract, Figure 1, and the Conclusion?
+
+        -- Formalism: Is the mathematical notation standard, precise, and consistent?
+
+        -- Visual Communication: Are charts and tables designed to be informative at a glance, with clear axes, labels, and captions?
+
+    6. Collaborative Value & Open Science
+        -- Resource Contribution: Does the work provide a new, high-quality dataset, a refined benchmark, or a robust codebase?
+
+        -- Heuristic Value: Does the paper provide "lessons learned" or negative results that save the community from future dead-ends?
+
+        -- Ethics & Safety: Does the paper proactively address potential dual-use concerns or biases in its findings?
+
+    7. Contextualization & Literature Mastery
+        -- Historical Accuracy: Does the paper correctly attribute ideas to their original sources, moving beyond just citing the most recent "famous" paper?
+
+        -- Critical Comparison: Does the related work section explain how this work differs conceptually, rather than just listing 20 papers?
+
+        -- Fairness: Does the paper acknowledge contemporaneous work and provide a neutral, objective comparison?
+"""

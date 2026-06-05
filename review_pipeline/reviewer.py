@@ -9,7 +9,7 @@ from typing import TypedDict
 from openai import OpenAI
 
 from review_pipeline import config
-from review_pipeline.clients import deepseek_chat
+from review_pipeline.clients import deepseek_chat, get_tool_call
 from review_pipeline.summarizer import PaperSummary
 from review_pipeline.tools import REVIEW_TOOL as _REVIEW_TOOL
 
@@ -106,11 +106,8 @@ def generate_review(
         tools=[_REVIEW_TOOL],
     )
 
-    tool_call = response.choices[0].message.tool_calls[0]
+    tool_call = get_tool_call(response)
     review_dict: ILCRReview = json.loads(tool_call.function.arguments)
-
-    if not review_dict:
-        raise ValueError("Model did not return a tool_use block for review generation.")
 
     return review_dict, format_review_markdown(review_dict, venue=venue, year=year)
 

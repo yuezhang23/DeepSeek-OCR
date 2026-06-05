@@ -11,7 +11,7 @@ import json
 from openai import OpenAI
 
 from review_pipeline import config
-from review_pipeline.clients import deepseek_chat
+from review_pipeline.clients import deepseek_chat, get_tool_call
 from review_pipeline.tools import QUERY_TOOL as _QUERY_TOOL
 
 _SYSTEM_PREAMBLE = """\
@@ -40,7 +40,7 @@ def generate_search_queries(
         )
 
     user_message = (
-        f"The paper above is intended for submission to {venue}.\n"
+        f"The paper above is intended for submission to top machine learning venues.\n"
         f"Generate {per_bucket} search queries per category (benchmark_queries, "
         f"problem_queries, technique_queries). Each query should be a concise phrase "
         f"suitable for searching arXiv. Avoid overly generic terms."
@@ -54,7 +54,7 @@ def generate_search_queries(
         tools=[_QUERY_TOOL],
     )
 
-    tool_call = response.choices[0].message.tool_calls[0]
+    tool_call = get_tool_call(response)
     tool_input: dict = json.loads(tool_call.function.arguments)
     return (
         tool_input.get("benchmark_queries", [])

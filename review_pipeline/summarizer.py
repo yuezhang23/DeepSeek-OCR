@@ -14,7 +14,7 @@ from openai import OpenAI
 
 from review_pipeline import config
 from review_pipeline.arxiv_client import PaperMetadata, download
-from review_pipeline.clients import deepseek_chat
+from review_pipeline.clients import deepseek_chat, get_tool_call
 from review_pipeline.relevance import RelevanceScore
 from review_pipeline.ocr import convert_pdf_to_markdown
 from review_pipeline.tools import PLAN_TOOL as _PLAN_TOOL
@@ -27,7 +27,6 @@ research paper (the "target paper") and are helping to summarize related work \
 for a peer review. Summaries should be accurate, concise, and focused on aspects \
 that are most relevant to evaluating the target paper.
 """
-
 
 class SummarizationPlan(TypedDict):
     arxiv_id: str
@@ -48,7 +47,6 @@ def plan_summarization(
     max_full_text: int = None,
 ) -> list[SummarizationPlan]:
     """Decide summarization method for each ranked paper.
-
     Assigns 'full_text' to the most relevant papers (up to max_full_text)
     and 'abstract_only' to the rest, specifying focus areas for full_text papers.
     """
@@ -79,7 +77,7 @@ def plan_summarization(
         tools=[_PLAN_TOOL],
     )
 
-    tool_call = response.choices[0].message.tool_calls[0]
+    tool_call = get_tool_call(response)
     plans_data = json.loads(tool_call.function.arguments).get("plans", [])
     return [SummarizationPlan(**p) for p in plans_data]
 
@@ -142,18 +140,19 @@ def _summarize_one(
 ) -> PaperSummary:
     """Summarize a single related paper. Called concurrently from build_all_summaries."""
     arxiv_id = plan["arxiv_id"]
-    if plan["method"] == "full_text":
-        paper_id = arxiv_id.replace(".", "_")
-        mmd_path = cache_dir / f"{paper_id}.mmd"
-        if mmd_path.exists():
-            related_md = mmd_path.read_text(encoding="utf-8")
-        else:
-            pdf_path = download(arxiv_id, cache_dir)
-            related_md, _ = convert_pdf_to_markdown(paper_id, pdf_path, cache_dir, ocr_engine=ocr_engine)
-        summary_text = _summarize_full_text(meta, related_md, plan["focus_areas"], paper_markdown, client)
-    else:
-        summary_text = _summarize_abstract_only(meta, paper_markdown, client)
-
+    # if plan["method"] == "full_text":
+    #     paper_id = arxiv_id.replace(".", "_")
+    #     # check if we've already done OCR + markdown conversion for this paper to avoid redundant work
+    #     local_mmd_dir = f"related_mds/{paper_id}.mmd"
+    #     mmd_path = cache_dir / f"{paper_id}.mmd" or Path(local_mmd_dir) 
+    #     if mmd_path.exists():
+    #         related_md = mmd_path.read_text(encoding="utf-8")
+    #     else:
+    #         pdf_path = download(arxiv_id, cache_dir)
+    #         related_md, _ = convert_pdf_to_markdown(paper_id, pdf_path, cache_dir, ocr_engine=ocr_engine)
+    #     summary_text = _summarize_full_text(meta, related_md, plan["focus_areas"], paper_markdown, client)
+    # else:
+    summary_text = _summarize_abstract_only(meta, paper_markdown, client)
     return PaperSummary(arxiv_id=arxiv_id, title=meta["title"], summary=summary_text)
 
 

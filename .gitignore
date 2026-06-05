@@ -2,3 +2,15 @@
 .env.*
 *.pem
 *.key
+
+# Large data / generated output dirs (review_pipeline)
+review_pipeline/out/
+review_pipeline/data/
+review_pipeline/test_files/
+review_pipeline/step_outputs/
+
+# Python / OS cruft
+__pycache__/
+*.pyc
+.DS_Store
+

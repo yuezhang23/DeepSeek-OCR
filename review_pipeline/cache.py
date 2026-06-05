@@ -12,6 +12,7 @@ _STAGE_FILES = {
     "summarization_plan": "summarization_plan.json",
     "summaries": "summaries.json",
     "review": "review.md",
+    "dimension_scores": "dimension_scores.json",
 }
 
 _TEXT_STAGES = {"ocr", "review"}

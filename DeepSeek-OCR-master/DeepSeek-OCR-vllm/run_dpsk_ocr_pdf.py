@@ -14,6 +14,9 @@ if torch.version.cuda == '11.8':
     os.environ["TRITON_PTXAS_PATH"] = "/usr/local/cuda-11.8/bin/ptxas"
 os.environ['VLLM_USE_V1'] = '0'
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+# Suppress vLLM's internal config-initialization warnings (max_model_len, max_num_seqs
+# "not set" warnings fire before user-provided LLM() kwargs are applied and are benign).
+os.environ.setdefault('VLLM_LOGGING_LEVEL', 'ERROR')
 
 # make sure the path of config_0.py can be found by current directory
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))

@@ -12,7 +12,7 @@ from openai import OpenAI
 
 from review_pipeline import config
 from review_pipeline.arxiv_client import PaperMetadata
-from review_pipeline.clients import deepseek_chat
+from review_pipeline.clients import deepseek_chat, get_tool_call
 from review_pipeline.tools import RELEVANCE_TOOL as _RELEVANCE_TOOL
 
 _SYSTEM_PREAMBLE = """\
@@ -76,10 +76,7 @@ def evaluate_relevance(
         tools=[_RELEVANCE_TOOL],
     )
 
-    tool_calls = response.choices[0].message.tool_calls
-    if not tool_calls:
-        return []
-    tool_call = tool_calls[0]
+    tool_call = get_tool_call(response)
     raw_scores: list[dict] = json.loads(tool_call.function.arguments).get("scores", [])
 
     results: list[RelevanceScore] = []
