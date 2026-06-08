@@ -253,8 +253,22 @@ Batch examples:
     )
     # ── API keys ─────────────────────────────────────────────────────────────
     parser.add_argument("--anthropic-api-key", default=None, help="Anthropic API key.")
-    parser.add_argument("--deepseek-api-key", default=None, help="DeepSeek API key.")
     parser.add_argument("--tavily-api-key", default=None, help="Tavily API key.")
+
+    # Generic LLM vendor (OpenAI-compatible). Defaults come from config.LLM_*
+    # (which fall back to the legacy DEEPSEEK_* env vars).
+    parser.add_argument("--llm-api-key", default=None,
+                        help="API key for the generation/scoring LLM vendor.")
+    parser.add_argument("--deepseek-api-key", dest="llm_api_key", default=None,
+                        help="Deprecated alias for --llm-api-key.")
+    parser.add_argument("--llm-base-url", default=None,
+                        help="Base URL of the OpenAI-compatible LLM endpoint "
+                             "(e.g. https://api.openai.com/v1, https://openrouter.ai/api/v1).")
+    parser.add_argument("--llm-model", default=None,
+                        help="Model name for the LLM vendor (overrides config.LLM_MODEL).")
+    parser.add_argument("--llm-provider", default=None,
+                        help="Vendor key used to shape reasoning params "
+                             "(e.g. deepseek, openai). Overrides config.LLM_PROVIDER.")
     return parser.parse_args()
 
 def run_pipeline(
@@ -267,8 +281,12 @@ def run_pipeline(
     markdown_path: Path | None = None,
     score_dimensions: bool = False,
     anthropic_api_key: str | None = None,
-    deepseek_api_key: str | None = None,
+    llm_api_key: str | None = None,
     tavily_api_key: str | None = None,
+    llm_base_url: str | None = None,
+    llm_model: str | None = None,
+    llm_provider: str | None = None,
+    deepseek_api_key: str | None = None,  # legacy alias for llm_api_key
     ocr_engine=None,
 ) -> str:
     """Execute all pipeline stages with per-stage caching. Returns output file path."""
@@ -278,9 +296,18 @@ def run_pipeline(
     from review_pipeline.clients import PipelineClients
     from review_pipeline import query_gen, search, arxiv_client, relevance, summarizer, reviewer, scorer
 
+    # Apply per-run LLM vendor overrides to the global default. Per-stage env
+    # vars (LLM_<STAGE>_*) still win, so individual stages can target their own
+    # OpenAI-compatible vendor regardless of these CLI defaults.
+    config.apply_llm_overrides(
+        provider=llm_provider,
+        api_key=llm_api_key or deepseek_api_key,
+        base_url=llm_base_url,
+        model=llm_model,
+    )
+
     clients = PipelineClients.build(
         anthropic_key=anthropic_api_key,
-        deepseek_key=deepseek_api_key,
         tavily_key=tavily_api_key,
     )
 
@@ -308,7 +335,7 @@ def run_pipeline(
     if force_rerun or not cache.exists("queries"):
         print("\n[Stage 3/9] Generating arXiv search queries...")
         queries = query_gen.generate_search_queries(
-            paper_md, venue=venue, client=clients.deepseek
+            paper_md, venue=venue, vendor=clients.vendor("query")
         )
         cache.save("queries", queries)
         SEARCHED[3] += 1
@@ -355,7 +382,7 @@ def run_pipeline(
     if force_rerun or not cache.exists("ranked_papers") or not cache.load("ranked_papers"):
         print(f"\n[Stage 6/9] Evaluating relevance of {len(metadata_map)} papers...")
         ranked = relevance.evaluate_relevance(
-            paper_md, metadata_map, client=clients.deepseek, top_k=config.TOP_K_PAPERS
+            paper_md, metadata_map, vendor=clients.vendor("relevance"), top_k=config.TOP_K_PAPERS
         )
         cache.save("ranked_papers", ranked)
         SEARCHED[6] += 1
@@ -369,7 +396,7 @@ def run_pipeline(
         print("\n[Stage 7/9] Planning summarization strategy...")
         max_ft = 0 if skip_ocr_related else config.MAX_FULL_TEXT_PAPERS
         plans = summarizer.plan_summarization(
-            paper_md, ranked, client=clients.deepseek, max_full_text=max_ft
+            paper_md, ranked, vendor=clients.vendor("plan"), max_full_text=max_ft
         )
         cache.save("summarization_plan", plans)
         SEARCHED[7] += 1
@@ -401,7 +428,7 @@ def run_pipeline(
         print("\n[Stage 8/9] Generating related work summaries...")
         related_cache = cache.dir / "related"
         summaries = summarizer.build_all_summaries(
-            paper_md, plans, metadata_map, cache_dir=related_cache, client=clients.deepseek, ocr_engine=ocr_engine
+            paper_md, plans, metadata_map, cache_dir=related_cache, vendor=clients.vendor("summary"), ocr_engine=ocr_engine
         )
         cache.save("summaries", summaries)
         SEARCHED[8] += 1
@@ -413,7 +440,7 @@ def run_pipeline(
     # ── Stage 9a / 9b: Review or Dimensional Scoring (DeepSeek) ────────────────
     if score_dimensions:
         print("\n[Stage 9/9] Scoring paper on 7 quality dimensions...")
-        scores = scorer.score_paper(paper_md, summaries, client=clients.deepseek)
+        scores = scorer.score_paper(paper_md, summaries, vendor=clients.vendor("score"))
         cache.save("dimension_scores", scores)
         for dim in scorer.DIMENSIONS:
             print(f"  {scorer.DIMENSION_LABELS[dim]}: {scores[dim]['score']}/10")
@@ -423,7 +450,7 @@ def run_pipeline(
 
     print(f"\n[Stage 9/9] Generating {venue} 2026 review...")
     _, output_md = reviewer.generate_review(
-        paper_md, summaries, client=clients.deepseek, venue=venue, year=2026
+        paper_md, summaries, vendor=clients.vendor("review"), venue=venue, year=2026
     )
     cache.save("review", output_md)
 
@@ -443,8 +470,12 @@ def run_pipeline_batch(
     papers: list[dict],
     max_workers: int = None,
     anthropic_api_key: str | None = None,
-    deepseek_api_key: str | None = None,
+    llm_api_key: str | None = None,
     tavily_api_key: str | None = None,
+    llm_base_url: str | None = None,
+    llm_model: str | None = None,
+    llm_provider: str | None = None,
+    deepseek_api_key: str | None = None,  # legacy alias for llm_api_key
     ocr_engine=None,
 ) -> list[str]:
     """Process multiple papers in parallel. Returns list of output file paths.
@@ -483,8 +514,11 @@ def run_pipeline_batch(
 
     common = dict(
         anthropic_api_key=anthropic_api_key,
-        deepseek_api_key=deepseek_api_key,
+        llm_api_key=llm_api_key or deepseek_api_key,
         tavily_api_key=tavily_api_key,
+        llm_base_url=llm_base_url,
+        llm_model=llm_model,
+        llm_provider=llm_provider,
         ocr_engine=ocr_engine,
     )
     outputs: list[str] = []
@@ -523,8 +557,11 @@ def main():
 
     api_kwargs = dict(
         anthropic_api_key=args.anthropic_api_key,
-        deepseek_api_key=args.deepseek_api_key,
+        llm_api_key=args.llm_api_key,
         tavily_api_key=args.tavily_api_key,
+        llm_base_url=args.llm_base_url,
+        llm_model=args.llm_model,
+        llm_provider=args.llm_provider,
     )
     pipeline_kwargs = dict(
         venue=args.venue,

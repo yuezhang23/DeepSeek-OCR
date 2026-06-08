@@ -7,14 +7,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A fork of DeepSeek's open-source **DeepSeek-OCR** project, extended with a custom
 **`review_pipeline`** that turns research-paper PDFs (or pre-converted markdown) into
 ICLR-style peer reviews and 7-dimension quality scores. The OCR model is used as one
-stage (PDF → markdown); the bulk of the original work lives in
-`DeepSeek-OCR-master/review_pipeline/`.
+stage (PDF → markdown); the bulk of the original work lives in the top-level
+`review_pipeline/` package.
 
 Two layers coexist:
 - **Upstream OCR code** — `DeepSeek-OCR-master/DeepSeek-OCR-vllm/` (vLLM backend, GPU)
   and `DeepSeek-OCR-master/DeepSeek-OCR-hf/` (transformers backend). Largely unmodified
   from upstream; the README at repo root documents install/inference for these.
-- **The review pipeline** — `DeepSeek-OCR-master/review_pipeline/`. This is where almost
+- **The review pipeline** — `review_pipeline/` at the repo root. This is where almost
   all custom work happens.
 
 ## Setup
@@ -29,17 +29,17 @@ Two layers coexist:
 
 ## Running the pipeline
 
-All commands run from `DeepSeek-OCR-master/` (the package is imported as `review_pipeline`):
+All commands run from the **repo root** (the package is imported as `review_pipeline`):
 
 ```bash
 # Single markdown file → one review
-python -m review_pipeline.main --markdown review_pipeline/test_files/604.md --output out/604.md
+python -m review_pipeline.main --markdown review_pipeline/test_files/505.md --output out/505.md
 
 # Batch: every .md found recursively under a dir, parallelized
-python -m review_pipeline.main --markdown-dir review_pipeline/mds_a --output-dir out/
+python -m review_pipeline.main --markdown-dir review_pipeline/data/mds_a --output-dir out/
 
 # Score on 7 quality dimensions instead of writing a prose review
-python -m review_pipeline.main --markdown-dir review_pipeline/mds_a --output-dir out/ --score-dimensions
+python -m review_pipeline.main --markdown-dir review_pipeline/data/mds_a --output-dir out/ --score-dimensions
 
 # Single PDF (runs OCR — needs GPU)
 python -m review_pipeline.main --pdf paper.pdf --output out/paper.md
@@ -59,10 +59,13 @@ Batch mode auto-skips papers whose output already exists, so reruns are resumabl
 previous stage's output, calls an LLM/API, and caches its result. The stage modules are
 deliberately thin and single-purpose:
 
-1. **Stage 2 — OCR** (`ocr.py` → `DeepSeek-OCR-vllm/run_dpsk_ocr_pdf.py`): PDF → markdown.
+1. **Stage 2 — OCR** (`ocr.py` → `run_dpsk_ocr_pdf.py`): PDF → markdown.
    Lazily imported so the GPU model only loads when actually needed; skipped when a
    `--markdown` file is supplied. `build_ocr_engine()` warms the vLLM model once so it's
-   reused across papers in a batch.
+   reused across papers in a batch. Note: `ocr.py` resolves the backend at
+   `<repo-root>/DeepSeek-OCR-vllm/run_dpsk_ocr_pdf.py` (`__file__`'s `parent.parent`),
+   but the upstream code actually lives at `DeepSeek-OCR-master/DeepSeek-OCR-vllm/` — so
+   a GPU/OCR run needs that dir reachable at the repo root (move/symlink it).
 2. **Stage 3 — Query generation** (`query_gen.py`): DeepSeek generates arXiv search queries.
 3. **Stage 4 — Search** (`search.py`): Tavily search → candidate arXiv IDs.
 4. **Stage 5 — Metadata** (`arxiv_client.py`): fetch title/abstract/authors from the
@@ -77,6 +80,20 @@ deliberately thin and single-purpose:
 8. **Stage 9a — Review** (`reviewer.py`): final ICLR-style review with rating + confidence
    (label scales defined as `RATING_LABELS` / `CONFIDENCE_LABELS`), OR
    **Stage 9b — Scoring** (`scorer.py`): integer 1–10 on each of 7 `DIMENSIONS`.
+   Unlike every other stage, 9b does **not** run on the DeepSeek/`LLMVendor` path — it
+   is a **multi-agent orchestration on the Claude Agent SDK** (`claude-agent-sdk`): one
+   autonomous agent per dimension (each with the `paper-quality-rubric` skill, web
+   search, and an in-process MCP `submit_score` tool), run concurrently, then an Opus
+   "judge" agent reconciles cross-dimension inconsistencies and emits the merged
+   `DimensionScores`. A PreToolUse hook blocks any web search/fetch touching OpenReview
+   (and filesystem tools are disabled) so agents can't read the paper's human reviews;
+   `AskUserQuestion` is auto-resolved when no human answers. Models/concurrency are env
+   tunable (`SCORE_DIMENSION_MODEL` default `claude-sonnet-4-6`, `SCORE_JUDGE_MODEL`
+   default `claude-opus-4-8`, `SCORE_AGENT_CONCURRENCY` default 4); auth via
+   `ANTHROPIC_API_KEY`. The `score_paper(paper_md, summaries, vendor)` signature is
+   preserved (`vendor` is accepted but unused) so `main.py` is unchanged. The skill lives
+   at `.claude/skills/paper-quality-rubric/SKILL.md` (discovered via
+   `setting_sources=["project"]`).
 
 Cross-cutting modules:
 - **`clients.py`** — the *only* place API clients are constructed. `PipelineClients.build()`
@@ -86,7 +103,11 @@ Cross-cutting modules:
   `get_tool_call()` extracts structured function-call results.
 - **`tools.py`** — centralized OpenAI-style function-calling tool schemas for every stage
   (`QUERY_TOOL`, `RELEVANCE_TOOL`, `PLAN_TOOL`, `REVIEW_TOOL`, `SCORE_TOOL`) plus the
-  canonical `DIMENSIONS` list. Structured output everywhere goes through these schemas.
+  canonical `DIMENSIONS` list. Structured output on the DeepSeek/`LLMVendor` stages goes
+  through these schemas. (Note: `scorer.py` no longer uses `SCORE_TOOL` — it moved to the
+  Claude Agent SDK with its own MCP `submit_score`/`submit_reconciled_scores` tools;
+  `SCORE_TOOL` is still used by the `review_scoring.py` eval script. `DIMENSIONS` remains
+  the single source of truth for both paths.)
 - **`config.py`** — all tunables and keys. Note the worker knobs are tuned to API rate
   limits: `TAVILY_SEARCH_WORKERS`, `SUMMARY_WORKERS` (per-paper), `PIPELINE_WORKERS`
   (papers in parallel — each paper ≈17 DeepSeek calls, so keep small).
@@ -119,7 +140,7 @@ These compare pipeline output against real ICLR reviews and are run standalone, 
 `main.py`. Ground-truth lives in `review_pipeline/metadata_300.json`; results land in
 `review_pipeline/out/`.
 
-- **`alignment_analysis.py`** — maps real ICLR reviewer comments (the `official_values` in
+- **`review_scoring.py`** — maps real ICLR reviewer comments (the `official_values` in
   `metadata_300.json`) onto the 7 scoring dimensions via DeepSeek, producing the same
   `DimensionScores` shape as `scorer.py`. This is how human reviews become comparable to AI scores.
 - **`align_review_4_standard.py`** — parses the simulated 4-reviewer files in
@@ -129,9 +150,11 @@ These compare pipeline output against real ICLR reviews and are run standalone, 
 - **`train_classifier.py`** — trains sklearn classifiers mapping the 7 dimension scores to
   ICLR accept/reject decisions.
 
-Data directories under `review_pipeline/`: `mds_a/` and `mds_r/` (accepted/rejected paper
-markdown inputs), `test_files/` (sample inputs), `related_pdfs/` (downloaded references),
-`step_outputs/` (the persistent cache mirror), `out/` (reviews, scores, plots).
+Data directories under `review_pipeline/`: `data/mds_a/` and `data/mds_r/`
+(accepted/rejected paper markdown inputs), `data/related_pdfs/` (downloaded references),
+`test_files/` (sample inputs), `step_outputs/` (the persistent cache mirror), `out/`
+(reviews, scores, plots). All of `out/`, `data/`, `test_files/`, and `step_outputs/` are
+git-ignored.
 
 ## Conventions
 
@@ -140,5 +163,7 @@ markdown inputs), `test_files/` (sample inputs), `related_pdfs/` (downloaded ref
   these in sync when changing payloads.
 - The 7 quality dimensions are defined once in `tools.py` (`DIMENSIONS`); `scorer.py`
   provides the human-readable `DIMENSION_LABELS`. Don't redefine the list ad hoc.
-- DeepSeek is the workhorse model (cheap, function-calling); Anthropic/Tavily clients exist
-  in `PipelineClients` but DeepSeek drives generation/scoring. Model names come from `config`.
+- DeepSeek is the workhorse model (cheap, function-calling) and drives generation for every
+  stage **except 9b**; Anthropic/Tavily clients exist in `PipelineClients`. Model names come
+  from `config`. The one exception is dimensional scoring (Stage 9b, `scorer.py`), which runs
+  on the Claude Agent SDK (multi-agent + judge) via `ANTHROPIC_API_KEY` — see Stage 9b above.

@@ -8,10 +8,7 @@ from __future__ import annotations
 
 import json
 
-from openai import OpenAI
-
-from review_pipeline import config
-from review_pipeline.clients import deepseek_chat, get_tool_call
+from review_pipeline.clients import LLMVendor, get_tool_call
 from review_pipeline.tools import QUERY_TOOL as _QUERY_TOOL
 
 _SYSTEM_PREAMBLE = """\
@@ -25,7 +22,7 @@ def generate_search_queries(
     paper_markdown: str,
     venue: str = "ICLR",
     num_queries: int = 12,
-    client: OpenAI | None = None,
+    vendor: LLMVendor | None = None,
 ) -> list[str]:
     """Analyze the paper and return a flat list of arXiv search queries.
 
@@ -33,11 +30,7 @@ def generate_search_queries(
     and related-technique queries.
     """
     per_bucket = max(3, num_queries // 3)
-    if client is None:
-        client = OpenAI(
-            api_key=config.DEEPSEEK_API_KEY,
-            base_url=config.DEEPSEEK_BASE_URL,
-        )
+    vendor = vendor or LLMVendor.for_stage("query")
 
     user_message = (
         f"The paper above is intended for submission to top machine learning venues.\n"
@@ -46,8 +39,7 @@ def generate_search_queries(
         f"suitable for searching arXiv. Avoid overly generic terms."
     )
 
-    response = deepseek_chat(
-        client,
+    response = vendor.chat(
         system=_SYSTEM_PREAMBLE + "\n\n" + paper_markdown,
         user=user_message,
         max_tokens=1024,

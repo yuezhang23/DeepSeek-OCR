@@ -10,11 +10,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Literal, TypedDict
 
-from openai import OpenAI
-
 from review_pipeline import config
 from review_pipeline.arxiv_client import PaperMetadata, download
-from review_pipeline.clients import deepseek_chat, get_tool_call
+from review_pipeline.clients import LLMVendor, get_tool_call
 from review_pipeline.relevance import RelevanceScore
 from review_pipeline.ocr import convert_pdf_to_markdown
 from review_pipeline.tools import PLAN_TOOL as _PLAN_TOOL
@@ -43,7 +41,7 @@ class PaperSummary(TypedDict):
 def plan_summarization(
     paper_markdown: str,
     ranked_papers: list[RelevanceScore],
-    client: OpenAI,
+    vendor: LLMVendor,
     max_full_text: int = None,
 ) -> list[SummarizationPlan]:
     """Decide summarization method for each ranked paper.
@@ -69,8 +67,7 @@ def plan_summarization(
         + paper_list
     )
 
-    response = deepseek_chat(
-        client,
+    response = vendor.chat(
         system=_SYSTEM_PREAMBLE + "\n\n" + paper_markdown,
         user=user_message,
         max_tokens=2048,
@@ -85,7 +82,7 @@ def plan_summarization(
 def _summarize_abstract_only(
     meta: PaperMetadata,
     paper_markdown: str,
-    client: OpenAI,
+    vendor: LLMVendor,
 ) -> str:
     prompt = (
         f"Write a concise summary (150-250 words) of the following related paper as it "
@@ -95,8 +92,7 @@ def _summarize_abstract_only(
         f"Authors: {', '.join(meta['authors'][:5])}\n"
         f"Abstract: {meta['abstract']}"
     )
-    response = deepseek_chat(
-        client,
+    response = vendor.chat(
         system=_SYSTEM_PREAMBLE + "\n\n" + paper_markdown,
         user=prompt,
         max_tokens=512,
@@ -110,7 +106,7 @@ def _summarize_full_text(
     related_markdown: str,
     focus_areas: list[str],
     paper_markdown: str,
-    client: OpenAI,
+    vendor: LLMVendor,
 ) -> str:
     focus_str = "\n".join(f"- {area}" for area in focus_areas) if focus_areas else "- overall contribution"
     prompt = (
@@ -120,8 +116,7 @@ def _summarize_full_text(
         f"Authors: {', '.join(meta['authors'][:5])}\n\n"
         f"--- FULL PAPER TEXT ---\n{related_markdown[:40000]}"
     )
-    response = deepseek_chat(
-        client,
+    response = vendor.chat(
         system=_SYSTEM_PREAMBLE + "\n\n" + paper_markdown,
         user=prompt,
         max_tokens=1024,
@@ -135,7 +130,7 @@ def _summarize_one(
     meta: PaperMetadata,
     paper_markdown: str,
     cache_dir: Path,
-    client: OpenAI,
+    vendor: LLMVendor,
     ocr_engine,
 ) -> PaperSummary:
     """Summarize a single related paper. Called concurrently from build_all_summaries."""
@@ -150,9 +145,9 @@ def _summarize_one(
     #     else:
     #         pdf_path = download(arxiv_id, cache_dir)
     #         related_md, _ = convert_pdf_to_markdown(paper_id, pdf_path, cache_dir, ocr_engine=ocr_engine)
-    #     summary_text = _summarize_full_text(meta, related_md, plan["focus_areas"], paper_markdown, client)
+    #     summary_text = _summarize_full_text(meta, related_md, plan["focus_areas"], paper_markdown, vendor)
     # else:
-    summary_text = _summarize_abstract_only(meta, paper_markdown, client)
+    summary_text = _summarize_abstract_only(meta, paper_markdown, vendor)
     return PaperSummary(arxiv_id=arxiv_id, title=meta["title"], summary=summary_text)
 
 
@@ -161,7 +156,7 @@ def build_all_summaries(
     plans: list[SummarizationPlan],
     metadata_map: dict[str, PaperMetadata],
     cache_dir: Path,
-    client: OpenAI,
+    vendor: LLMVendor,
     ocr_engine=None,
     max_workers: int = None,
 ) -> dict[str, PaperSummary]:
@@ -187,7 +182,7 @@ def build_all_summaries(
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
-            pool.submit(_summarize_one, plan, meta, paper_markdown, cache_dir, client, ocr_engine): plan["arxiv_id"]
+            pool.submit(_summarize_one, plan, meta, paper_markdown, cache_dir, vendor, ocr_engine): plan["arxiv_id"]
             for plan, meta in valid_plans
         }
         for fut in as_completed(futures):

@@ -8,11 +8,9 @@ from __future__ import annotations
 import json
 from typing import TypedDict
 
-from openai import OpenAI
-
 from review_pipeline import config
 from review_pipeline.arxiv_client import PaperMetadata
-from review_pipeline.clients import deepseek_chat, get_tool_call
+from review_pipeline.clients import LLMVendor, get_tool_call
 from review_pipeline.tools import RELEVANCE_TOOL as _RELEVANCE_TOOL
 
 _SYSTEM_PREAMBLE = """\
@@ -32,7 +30,7 @@ class RelevanceScore(TypedDict):
 def evaluate_relevance(
     paper_markdown: str,
     candidates: dict[str, PaperMetadata],
-    client: OpenAI | None = None,
+    vendor: LLMVendor | None = None,
     top_k: int = None,
 ) -> list[RelevanceScore]:
     """Score each candidate paper and return the top_k most relevant.
@@ -41,11 +39,7 @@ def evaluate_relevance(
     Returns list sorted by relevance_score descending.
     """
     top_k = top_k or config.TOP_K_PAPERS
-    if client is None:
-        client = OpenAI(
-            api_key=config.DEEPSEEK_API_KEY,
-            base_url=config.DEEPSEEK_BASE_URL,
-        )
+    vendor = vendor or LLMVendor.for_stage("relevance")
 
     if not candidates:
         return []
@@ -68,8 +62,7 @@ def evaluate_relevance(
         + "\n".join(candidate_lines)
     )
 
-    response = deepseek_chat(
-        client,
+    response = vendor.chat(
         system=_SYSTEM_PREAMBLE + "\n\n" + paper_markdown,
         user=user_message,
         max_tokens=4096,

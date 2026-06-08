@@ -1,6 +1,6 @@
 """
 Parse the simulated 4-reviewer review files under ``out/review_4_standard/``
-and run them through ``alignment_analysis.align_reviews_to_dimensions`` to
+and run them through ``review_scoring.align_reviews_to_dimensions`` to
 produce a JSON file with the same shape as ``alignment_results.json``.
 
 File naming: ``review_<KEY>_4*.txt`` — KEY is the digits between the first
@@ -11,7 +11,7 @@ Each file embeds the 4 reviewers inside a ``\\boxed_simreviewers{ ... }``
 block. We parse the markdown sections (Summary, Soundness, Presentation,
 Contribution, Strengths, Weaknesses, Questions, Rating, Confidence) into
 dicts that match the ``official_values`` shape expected by
-``alignment_analysis._format_reviews``.
+``review_scoring._format_reviews``.
 """
 from __future__ import annotations
 
@@ -24,13 +24,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from openai import OpenAI
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from review_pipeline import config
-from review_pipeline.alignment_analysis import align_reviews_to_dimensions
+from review_pipeline.review_scoring import align_reviews_to_dimensions
+from review_pipeline.clients import build_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +245,7 @@ def main() -> None:
         return
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    client = OpenAI(api_key=config.DEEPSEEK_API_KEY, base_url=config.DEEPSEEK_BASE_URL)
+    client = build_llm_client()
     lock = threading.Lock()
 
     def worker(key: str, reviewers: list[dict]):

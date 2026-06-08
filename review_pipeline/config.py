@@ -15,6 +15,77 @@ CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
 DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
+# ── Generic LLM provider (OpenAI-compatible Chat Completions API) ────────────
+# The generation/scoring stages talk to ANY vendor that exposes an
+# OpenAI-compatible endpoint — no code changes needed, just point these vars at
+# the vendor: DeepSeek, OpenAI, OpenRouter, Together, Groq, Fireworks, Mistral,
+# xAI, or a local server (vLLM, Ollama, LM Studio). Each falls back to the
+# legacy DEEPSEEK_* values so existing setups keep working unchanged.
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
+LLM_API_KEY: str = os.getenv("LLM_API_KEY", "") or DEEPSEEK_API_KEY
+LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "") or DEEPSEEK_BASE_URL
+LLM_MODEL: str = os.getenv("LLM_MODEL", "") or DEEPSEEK_MODEL
+# Chain-of-thought / reasoning control:
+#   "auto" — enable reasoning only for providers known to support it
+#   "on"   — always request reasoning (reasoning-capable models only)
+#   "off"  — never request reasoning
+LLM_THINKING: str = os.getenv("LLM_THINKING", "auto").strip().lower()
+# Providers that accept DeepSeek/OpenAI-style reasoning params under "auto".
+LLM_THINKING_PROVIDERS: set[str] = {
+    p.strip().lower()
+    for p in os.getenv("LLM_THINKING_PROVIDERS", "deepseek,openai").split(",")
+    if p.strip()
+}
+
+# Pipeline stages that issue OpenAI-compatible LLM calls. Each may target its
+# own vendor independently via LLM_<STAGE>_* env vars (PROVIDER / API_KEY /
+# BASE_URL / MODEL / THINKING); anything unset inherits the global LLM_* default
+# above. Stage keys mirror the function-call stages (tools.py): e.g. set
+# LLM_REVIEW_MODEL / LLM_REVIEW_BASE_URL to run only the review stage elsewhere.
+LLM_STAGES: tuple[str, ...] = ("query", "relevance", "plan", "summary", "review", "score")
+
+
+def apply_llm_overrides(
+    provider: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+    thinking: str | None = None,
+) -> None:
+    """Override the global default LLM settings at runtime (e.g. from CLI flags).
+
+    Per-stage env overrides (LLM_<STAGE>_*) still take precedence over these
+    globals — see llm_stage_settings(). Empty/None values are ignored.
+    """
+    global LLM_PROVIDER, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_THINKING
+    if provider:
+        LLM_PROVIDER = provider.strip().lower()
+    if api_key:
+        LLM_API_KEY = api_key
+    if base_url:
+        LLM_BASE_URL = base_url
+    if model:
+        LLM_MODEL = model
+    if thinking:
+        LLM_THINKING = thinking.strip().lower()
+
+
+def llm_stage_settings(stage: str) -> dict[str, str]:
+    """Resolve (provider, api_key, base_url, model, thinking) for one stage.
+
+    Reads LLM_<STAGE>_* env vars, each falling back to the global LLM_* default,
+    so a stage only needs env overrides for the fields it wants to change.
+    Reads the globals at call time so runtime apply_llm_overrides() is honored.
+    """
+    s = stage.upper()
+    return {
+        "provider": os.getenv(f"LLM_{s}_PROVIDER", "").strip().lower() or LLM_PROVIDER,
+        "api_key": os.getenv(f"LLM_{s}_API_KEY", "") or LLM_API_KEY,
+        "base_url": os.getenv(f"LLM_{s}_BASE_URL", "") or LLM_BASE_URL,
+        "model": os.getenv(f"LLM_{s}_MODEL", "") or LLM_MODEL,
+        "thinking": os.getenv(f"LLM_{s}_THINKING", "").strip().lower() or LLM_THINKING,
+    }
+
 # Paths
 CACHE_DIR: Path = Path(os.getenv("REVIEWER_CACHE_DIR", "/tmp/paper_reviewer_cache"))
 

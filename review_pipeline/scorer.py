@@ -1,31 +1,59 @@
 """
-Stage 9-b — Dimensional quality scoring.
+Stage 9-b — Dimensional quality scoring via multi-agent orchestration.
 
-Scores the paper on 7 dimensions (each 1–10) using DeepSeek.
+Each of the 7 quality dimensions is scored by its OWN autonomous agent built on the
+Claude Agent SDK. Every dimension agent:
+  • has its own dimension-specific prompt + the shared `paper-quality-rubric` skill,
+  • may gather evidence with WebSearch/WebFetch (general prior art only),
+  • may ask the user for clarification via AskUserQuestion — and, when no human answers
+    (autonomous batch mode), resolves the uncertainty itself and continues,
+  • returns a strict `{rationale, score}` through an in-process MCP `submit_score` tool.
+
+A PreToolUse hook blocks any WebSearch/WebFetch that targets OpenReview, so agents can
+never probe the paper's human peer reviews. Filesystem tools are disabled for the same
+reason (the human reviews also live locally in metadata_300.json).
+
+Finally a *judge* agent (Opus) reads all 7 results, resolves cross-dimension
+inconsistencies in the rationales, and emits the merged `DimensionScores` that is saved.
+
+The public `score_paper(paper_md, summaries, vendor) -> DimensionScores` signature is
+unchanged so `main.run_pipeline` needs no edits. `vendor` is accepted for backward
+compatibility but unused — this stage runs on Claude via ANTHROPIC_API_KEY.
+
+Model selection (env, with defaults):
+  SCORE_DIMENSION_MODEL  default claude-sonnet-4-6   (the 7 dimension agents)
+  SCORE_JUDGE_MODEL      default claude-opus-4-8      (the reconciliation judge)
+  SCORE_AGENT_CONCURRENCY default 4                   (max dimension agents in flight)
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 import sys
-import threading
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
-from openai import OpenAI
-
-# Allow running directly (`python scorer.py …` or `python -m review_pipeline.scorer …`)
-# by ensuring the package root is importable before the review_pipeline imports below.
+# Allow running directly (`python -m review_pipeline.scorer …`) by making the package
+# root importable before the review_pipeline imports below.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from review_pipeline import config
-from review_pipeline.clients import deepseek_chat, get_tool_call
-from review_pipeline.tools import DIMENSIONS, SCORE_TOOL as _SCORE_TOOL
+from claude_agent_sdk import (  # noqa: E402
+    ClaudeAgentOptions,
+    HookMatcher,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    ResultMessage,
+    create_sdk_mcp_server,
+    query,
+    tool,
+)
+
+from review_pipeline import tools as _tools  # noqa: E402
+from review_pipeline.tools import DIMENSIONS  # noqa: E402  (re-exported for main.py)
 
 logger = logging.getLogger(__name__)
-
-# Process-wide lock so concurrent batch workers serialize their JSON appends.
-_SCORES_JSON_LOCK = threading.Lock()
 
 # ─── Dimension registry ───────────────────────────────────────────────────────
 DIMENSION_LABELS = {
@@ -38,7 +66,7 @@ DIMENSION_LABELS = {
     "contextualization_relative_to_prior_work": "Contextualization Relative to Prior Work",
 }
 
-# ─── TypedDicts ───────────────────────────────────────────────────────────────
+# ─── TypedDicts (shape contract shared with main.py / cache) ───────────────────
 class DimensionEntry(TypedDict):
     rationale: str
     score: int
@@ -53,83 +81,184 @@ class DimensionScores(TypedDict):
     value_to_research_community: DimensionEntry
     contextualization_relative_to_prior_work: DimensionEntry
 
-# ─── System prompts ───────────────────────────────────────────────────────────
-# Structure mirrors alignment_analysis.py: one consolidated preamble that combines role + task + scoring guide, then a dimensions block, then the paper content. Keeps the rationale-before-score instruction front and centre.
-_SYSTEM_PREAMBLE = """\
-You are an expert academic reviewer with deep knowledge of machine learning, computer science, and related fields. You have reviewed hundreds of papers for top venues including NeurIPS, ICML, ICLR, ACL, and CVPR.
+# ─── Tunables ──────────────────────────────────────────────────────────────────
+_DIM_MODEL = os.getenv("SCORE_DIMENSION_MODEL", "claude-sonnet-4-6")
+_JUDGE_MODEL = os.getenv("SCORE_JUDGE_MODEL", "claude-opus-4-8")
+_AGENT_CONCURRENCY = max(1, int(os.getenv("SCORE_AGENT_CONCURRENCY", "4")))
+_PAPER_CHAR_LIMIT = 100_000  # ~15K tokens; keeps each agent's context modest
+_REPO_ROOT = Path(__file__).parent.parent  # where .claude/skills lives
 
-Read the paper below and rate it on the 7 evaluation dimensions listed further down. For each dimension you will emit a nested object with two fields, in this exact order:
-  1. `rationale` — a 2–4 sentence evidence-grounded justification citing concrete elements of the paper (specific sections, figures, claims, baselines).
-  2. `score` — an integer from 1 to 10 that follows from the rationale you just wrote.
+# Filesystem / shell tools the scoring agents must never use — reading the repo would
+# leak the ground-truth human reviews in metadata_300.json.
+_FS_TOOLS = {"Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "Grep", "Glob"}
 
-The schema enforces this ordering: `rationale` is declared before `score` in every dimension object. Treat the score as a *conclusion* of the rationale, never a number picked first and justified after. If your reasoning shifts mid-rationale, update the score; never anchor on the number.
+# ─── Cross-cutting hook + permission gate ──────────────────────────────────────
+async def _block_openreview_hook(input_data: dict, tool_use_id, context) -> dict:
+    """PreToolUse: deny any web search/fetch that touches OpenReview, so a scoring
+    agent can never read the paper's human peer reviews."""
+    tool_name = input_data.get("tool_name", "")
+    if tool_name in ("WebSearch", "WebFetch"):
+        blob = json.dumps(input_data.get("tool_input", {})).lower()
+        if "openreview" in blob:
+            logger.info("[scorer] blocked %s targeting OpenReview", tool_name)
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        "Probing human peer reviews from OpenReview is forbidden during "
+                        "autonomous scoring. Score only from the paper's own content and "
+                        "general prior art."
+                    ),
+                }
+            }
+    return {}
 
-Scoring guide:
-  9–10  Paradigm-shifting; flawless execution; likely an Oral.
-  7–8   Strong contribution; well-supported; clear "Accept".
-  5–6   Interesting but has flaws or limited novelty; "Borderline".
-  3–4   Significant technical errors, lack of clarity, or negligible novelty.
-  1–2   Factually incorrect, plagiarized, or completely out of scope.
-"""
+
+async def _gate_tool(tool_name: str, input_data: dict, context):
+    """can_use_tool: auto-resolve AskUserQuestion (autonomous mode) and hard-deny
+    filesystem/shell tools; allow everything else (web/skill/submit)."""
+    if tool_name == "AskUserQuestion":
+        questions = input_data.get("questions", [])
+        summary = "; ".join(q.get("question", "") for q in questions) if isinstance(questions, list) else str(questions)
+        logger.info("[scorer] AskUserQuestion auto-resolved (no human in autonomous mode): %s", summary)
+        return PermissionResultDeny(
+            message=(
+                "No human reviewer is available. Resolve the uncertainty yourself using "
+                "your best expert judgment, state the assumption in your rationale, and "
+                "continue to a final score."
+            )
+        )
+    if tool_name in _FS_TOOLS:
+        return PermissionResultDeny(
+            message="Filesystem/shell access is disabled for scoring agents."
+        )
+    return PermissionResultAllow(updated_input=input_data)
 
 
-def _dimension_block() -> str:
-    """Compact listing of the 7 dimension names — used as a quick reference
-    above the detailed criteria (matches the `_dimension_block()` pattern in
-    alignment_analysis.py)."""
-    return "Dimensions to score:\n" + "\n".join(
-        f"  - {dim} ({DIMENSION_LABELS[dim]})" for dim in DIMENSIONS
+_PRETOOL_HOOKS = {
+    "PreToolUse": [HookMatcher(matcher="WebSearch|WebFetch", hooks=[_block_openreview_hook])]
+}
+
+# ─── In-process MCP "submit" tools (strict structured output) ──────────────────
+def _make_dimension_recorder():
+    """Per-run MCP server exposing `submit_score`; returns (server, holder)."""
+    holder: dict[str, Any] = {}
+
+    @tool(
+        "submit_score",
+        "Record your FINAL rationale and integer score (1-10) for this single dimension. "
+        "Write the rationale FIRST, then choose the score that follows from it. "
+        "Call this exactly once when you are done; produce no other final output.",
+        {"rationale": str, "score": int},
     )
+    async def submit_score(args: dict) -> dict:
+        holder["rationale"] = str(args.get("rationale", "")).strip()
+        try:
+            holder["score"] = max(1, min(10, int(args.get("score"))))
+        except (TypeError, ValueError):
+            holder["score"] = None
+        return {"content": [{"type": "text", "text": "Score recorded. You may stop now."}]}
+
+    server = create_sdk_mcp_server(name="score", version="1.0.0", tools=[submit_score])
+    return server, holder
 
 
-# ─── Public API ───────────────────────────────────────────────────────────────
-_PAPER_CHAR_LIMIT = 100_000  # ~15K tokens; keeps total context well within 128K window
+def _make_judge_recorder():
+    """Per-run MCP server exposing `submit_reconciled_scores`; returns (server, holder)."""
+    holder: dict[str, Any] = {}
 
-
-def score_paper(
-    paper_md: str,
-    summaries: dict,
-    client: OpenAI,
-) -> DimensionScores:
-    """Score the paper on 7 dimensions. Returns DimensionScores dict."""
-    truncated = paper_md[:_PAPER_CHAR_LIMIT]
-    if len(paper_md) > _PAPER_CHAR_LIMIT:
-        logger.warning("Paper truncated from %d to %d chars for scoring.", len(paper_md), _PAPER_CHAR_LIMIT)
-
-    related_ctx = _build_related_work_context(summaries)
-    parts = [
-        _SYSTEM_PREAMBLE,
-        _dimension_block(),
-        "Paper to evaluate:\n\n" + truncated,
-        related_ctx or None,
-    ]
-    system_content = "\n\n".join(p for p in parts if p)
-
-    logger.info("Scorer system prompt: %d chars", len(system_content))
-
-    user_message = (
-        "Evaluate the paper on all 7 dimensions. For each dimension's nested "
-        "object, write `rationale` first (evidence-grounded, citing the paper), "
-        "then choose the `score` (1–10 integer) that follows from it."
+    @tool(
+        "submit_reconciled_scores",
+        "Submit the final reconciled scores for ALL 7 dimensions as a single JSON object "
+        'mapping each dimension key to {"rationale": <str>, "score": <int 1-10>}. '
+        "Call this exactly once.",
+        {"scores_json": str},
     )
+    async def submit_reconciled_scores(args: dict) -> dict:
+        holder["raw"] = args.get("scores_json", "")
+        return {"content": [{"type": "text", "text": "Reconciled scores recorded. Stop now."}]}
 
-    response = deepseek_chat(
-        client,
-        system=system_content,
-        user=user_message,
-        max_tokens=8192,
-        tools=[_SCORE_TOOL],
-        # tool_choice={"type": "function", "function": {"name": "submit_dimension_scores"}},
-        thinking=True,
-    )
-    tool_call = get_tool_call(response)
-    return json.loads(tool_call.function.arguments)
+    server = create_sdk_mcp_server(name="judge", version="1.0.0", tools=[submit_reconciled_scores])
+    return server, holder
+
+# ─── Prompts ────────────────────────────────────────────────────────────────────
+_DIMENSION_SYSTEM = """\
+You are a meticulous, world-class peer reviewer for top ML/CS venues (NeurIPS, ICML, \
+ICLR, ACL, CVPR). You are evaluating ONE paper on EXACTLY ONE quality dimension — ignore \
+all other dimensions:
+
+  Dimension : {label}  (key: {key})
+  Measures  : {desc}
+
+Method:
+1. Read the paper text in the user message.
+2. Invoke the `paper-quality-rubric` skill and apply its criteria for THIS dimension and
+   the shared 1-10 scale.
+3. Ground every judgment in concrete evidence (specific sections, figures, tables, claims,
+   baselines). You MAY use WebSearch/WebFetch to verify prior art, novelty, or context —
+   but you MUST NOT look up or rely on this paper's peer reviews, ratings, rebuttals, or
+   accept/reject decision (especially on OpenReview). Score on merits only.
+4. If something is genuinely ambiguous you may use AskUserQuestion; if no answer comes
+   back, resolve it yourself with expert judgment, note the assumption, and proceed.
+5. Write a 2-4 sentence, evidence-grounded rationale FIRST, then choose the integer score
+   (1-10) that the rationale implies — never pick the number first.
+6. Finish by calling `submit_score` exactly once with your rationale and score."""
+
+_DIMENSION_USER = """\
+Evaluate the dimension "{label}" for the following paper, then call submit_score.
+
+=== PAPER ===
+{paper}
+{related}"""
+
+_JUDGE_SYSTEM = """\
+You are the senior area chair reconciling seven INDEPENDENT single-dimension reviews of \
+one paper. Each dimension was scored by a separate reviewer who saw only their own \
+dimension, so their rationales may conflict.
+
+Your job:
+- Read all seven {{rationale, score}} pairs.
+- Detect and resolve INCONSISTENCIES across rationales: factual contradictions about the
+  paper, a rationale that argues one way but lands on a mismatched score, a claim in one
+  dimension that undercuts another, or contradictory evidence.
+- Lightly revise rationales so they are mutually consistent and so each score follows from
+  its (possibly corrected) rationale. Keep each rationale 2-4 sentences and grounded in the
+  paper. Do not invent new evidence; do not change a score without a reason traceable to
+  the rationales.
+- You MUST NOT look up external peer reviews, ratings, or the decision.
+- Finish by calling `submit_reconciled_scores` exactly once with a JSON object whose keys
+  are EXACTLY: {keys}. Each value is {{"rationale": <str>, "score": <int 1-10>}}."""
+
+_JUDGE_USER = """\
+Here are the seven independent dimension reviews as JSON:
+
+{results_json}
+
+Paper (for reference):
+{paper}
+
+Reconcile any inconsistencies across the rationales, then call \
+submit_reconciled_scores with all 7 dimensions."""
+
+
+async def _single_user_msg(text: str):
+    """One-shot streaming-input prompt. `can_use_tool` requires streaming mode, so the
+    prompt must be an AsyncIterable of message dicts rather than a plain string. Yielding
+    a single user message and returning closes the input stream so the agent runs one turn
+    and finishes."""
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": text},
+        "parent_tool_use_id": None,
+        "session_id": "default",
+    }
 
 
 def _build_related_work_context(summaries: dict) -> str:
     if not summaries:
         return ""
-    lines = ["=== RELATED WORK SUMMARIES ===\n"]
+    lines = ["\n=== RELATED WORK SUMMARIES ===\n"]
     for i, (arxiv_id, info) in enumerate(summaries.items(), 1):
         title = info.get("title", arxiv_id) if isinstance(info, dict) else getattr(info, "title", arxiv_id)
         summary = info.get("summary", "") if isinstance(info, dict) else getattr(info, "summary", "")
@@ -137,141 +266,162 @@ def _build_related_work_context(summaries: dict) -> str:
     return "\n".join(lines)
 
 
-# ─── Batch API ────────────────────────────────────────────────────────────────
-def _append_scores_json(json_path: Path, paper_id: str, scores: DimensionScores) -> None:
-    """Atomically merge ``{paper_id: scores}`` into the JSON file at json_path.
-
-    Thread-safe: holds a process-wide lock around read-modify-write so concurrent
-    batch workers don't clobber each other. Mirrors ``main._append_scores_json``.
-    """
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    with _SCORES_JSON_LOCK:
-        existing: dict = {}
-        if json_path.exists():
-            try:
-                existing = json.loads(json_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                logger.warning("Could not parse %s; starting fresh.", json_path)
-        existing[paper_id] = scores
-        tmp = json_path.with_suffix(json_path.suffix + ".tmp")
-        tmp.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(json_path)
+# ─── Agent runs ─────────────────────────────────────────────────────────────────
+def _dimension_options(server) -> ClaudeAgentOptions:
+    return ClaudeAgentOptions(
+        model=_DIM_MODEL,
+        cwd=str(_REPO_ROOT),
+        setting_sources=["project"],   # discover .claude/skills/paper-quality-rubric
+        skills="all",
+        mcp_servers={"score": server},
+        allowed_tools=["WebSearch", "WebFetch", "Skill", "TodoWrite", "mcp__score__submit_score"],
+        disallowed_tools=sorted(_FS_TOOLS),
+        can_use_tool=_gate_tool,
+        hooks=_PRETOOL_HOOKS,
+        permission_mode="default",
+        max_turns=30,
+    )
 
 
-def score_paper_batch(
-    paper_mds: dict[str, str],
-    client: OpenAI,
-    summaries: dict[str, dict] | None = None,
-    output_path: Path | str = Path("out/ai_results.json"),
-    max_workers: int | None = None,
-    resume: bool = True,
-) -> dict[str, DimensionScores]:
-    """Score many papers concurrently and persist incrementally to one JSON file.
-
-    Mirrors the batch pattern in ``main.run_pipeline_batch``: a ThreadPoolExecutor
-    fans out ``score_paper`` calls, and each successful result is appended to
-    ``output_path`` under a shared lock so partial progress survives a crash.
-
-    Args:
-        paper_mds:   ``{paper_id: markdown_text}``. Keys become JSON keys.
-        client:      DeepSeek OpenAI-compatible client.
-        summaries:   Optional ``{paper_id: summaries_dict}``. Papers without an
-                     entry are scored with no related-work context.
-        output_path: JSON file to append into (default ``out/ai_results.json``).
-        max_workers: Worker count (default ``config.PIPELINE_WORKERS``).
-        resume:      If True and ``output_path`` exists, skip papers already
-                     present and merge new results into the same file.
-
-    Returns:
-        ``{paper_id: DimensionScores}`` including any papers loaded via resume.
-    """
-    import concurrent.futures
-
-    output_path = Path(output_path)
-    summaries = summaries or {}
-    max_workers = max_workers or config.PIPELINE_WORKERS
-
-    results: dict[str, DimensionScores] = {}
-    if resume and output_path.exists():
+async def _run_dimension(dim: str, paper: str, related: str, sem: asyncio.Semaphore) -> DimensionEntry:
+    label = DIMENSION_LABELS[dim]
+    async with sem:
+        server, holder = _make_dimension_recorder()
+        opts = _dimension_options(server)
+        opts.system_prompt = _DIMENSION_SYSTEM.format(
+            label=label, key=dim, desc=_tools._DIMENSION_DESCRIPTIONS[dim]
+        )
+        prompt = _DIMENSION_USER.format(label=label, paper=paper, related=related)
         try:
-            results = json.loads(output_path.read_text(encoding="utf-8"))
-            logger.info("Resuming from %s (%d papers already scored).", output_path, len(results))
+            async for msg in query(prompt=_single_user_msg(prompt), options=opts):
+                if isinstance(msg, ResultMessage) and not holder.get("rationale"):
+                    # Fallback: try to recover from the agent's final text if it forgot
+                    # to call submit_score.
+                    _maybe_recover_dim(holder, msg.result or "")
+        except Exception as exc:  # noqa: BLE001 — never let one dimension crash the batch
+            logger.warning("[scorer] dimension '%s' agent failed: %s", dim, exc)
+
+    score = holder.get("score")
+    rationale = holder.get("rationale") or "(agent produced no rationale; defaulted)"
+    if score is None:
+        logger.warning("[scorer] dimension '%s' produced no score; defaulting to 5", dim)
+        score = 5
+    logger.info("[scorer] %s -> %d/10", label, score)
+    return {"rationale": rationale, "score": int(score)}
+
+
+def _maybe_recover_dim(holder: dict, text: str) -> None:
+    """Best-effort extraction of {rationale, score} from a free-text final message."""
+    obj = _extract_json_obj(text)
+    if isinstance(obj, dict) and "score" in obj:
+        holder.setdefault("rationale", str(obj.get("rationale", "")).strip())
+        try:
+            holder.setdefault("score", max(1, min(10, int(obj["score"]))))
+        except (TypeError, ValueError):
+            pass
+
+
+async def _run_judge(dim_results: dict[str, DimensionEntry], paper: str) -> DimensionScores:
+    server, holder = _make_judge_recorder()
+    opts = ClaudeAgentOptions(
+        model=_JUDGE_MODEL,
+        cwd=str(_REPO_ROOT),
+        setting_sources=["project"],
+        skills="all",
+        mcp_servers={"judge": server},
+        allowed_tools=["Skill", "TodoWrite", "mcp__judge__submit_reconciled_scores"],
+        disallowed_tools=sorted(_FS_TOOLS | {"WebSearch", "WebFetch"}),
+        can_use_tool=_gate_tool,
+        permission_mode="default",
+        max_turns=20,
+    )
+    opts.system_prompt = _JUDGE_SYSTEM.format(keys=", ".join(DIMENSIONS))
+    prompt = _JUDGE_USER.format(
+        results_json=json.dumps(dim_results, indent=2, ensure_ascii=False),
+        paper=paper,
+    )
+    last_text = ""
+    try:
+        async for msg in query(prompt=_single_user_msg(prompt), options=opts):
+            if isinstance(msg, ResultMessage):
+                last_text = msg.result or last_text
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[scorer] judge agent failed (%s); using unreconciled scores", exc)
+
+    raw = holder.get("raw") or last_text
+    return _finalize(raw, dim_results)
+
+
+# ─── Result assembly ────────────────────────────────────────────────────────────
+def _extract_json_obj(text: str):
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if 0 <= start < end:
+        try:
+            return json.loads(text[start : end + 1])
         except json.JSONDecodeError:
-            logger.warning("Could not parse %s; starting fresh.", output_path)
+            return None
+    return None
 
-    pending = {pid: md for pid, md in paper_mds.items() if pid not in results}
-    if not pending:
-        logger.info("All %d papers already scored in %s.", len(paper_mds), output_path)
-        return results
 
-    def _worker(pid: str, md: str) -> tuple[str, DimensionScores]:
-        return pid, score_paper(md, summaries.get(pid, {}), client)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_worker, pid, md): pid for pid, md in pending.items()}
-        for fut in concurrent.futures.as_completed(futures):
-            pid = futures[fut]
+def _finalize(raw: str, dim_results: dict[str, DimensionEntry]) -> DimensionScores:
+    """Build the final DimensionScores from the judge output, falling back per-dimension
+    to the unreconciled result whenever the judge omitted or malformed an entry."""
+    parsed = _extract_json_obj(raw) or {}
+    final: dict[str, DimensionEntry] = {}
+    for dim in DIMENSIONS:
+        fallback = dim_results.get(dim, {"rationale": "(missing)", "score": 5})
+        entry = parsed.get(dim) if isinstance(parsed, dict) else None
+        if isinstance(entry, dict) and "score" in entry:
             try:
-                _, scores = fut.result()
-            except Exception as exc:
-                logger.error("Scoring failed for %s: %s", pid, exc)
-                continue
-            results[pid] = scores
-            _append_scores_json(output_path, pid, scores)
-            logger.info("  [batch] Scored %s → %s", pid, output_path)
+                score = max(1, min(10, int(entry["score"])))
+            except (TypeError, ValueError):
+                score = int(fallback["score"])
+            rationale = str(entry.get("rationale") or fallback["rationale"]).strip()
+            final[dim] = {"rationale": rationale, "score": score}
+        else:
+            final[dim] = {"rationale": fallback["rationale"], "score": int(fallback["score"])}
+    return final  # type: ignore[return-value]
 
-    return results
 
+async def _score_paper_async(paper_md: str, summaries: dict) -> DimensionScores:
+    truncated = paper_md[:_PAPER_CHAR_LIMIT]
+    if len(paper_md) > _PAPER_CHAR_LIMIT:
+        logger.warning("Paper truncated from %d to %d chars for scoring.", len(paper_md), _PAPER_CHAR_LIMIT)
+    related = _build_related_work_context(summaries)
 
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Batch-score papers on 7 quality dimensions.")
-    parser.add_argument(
-        "--markdown-dir",
-        type=Path,
-        required=True,
-        help="Directory to search (recursively) for *.md paper files.",
+    sem = asyncio.Semaphore(_AGENT_CONCURRENCY)
+    results = await asyncio.gather(
+        *(_run_dimension(dim, truncated, related, sem) for dim in DIMENSIONS)
     )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("out/ai_results.json"),
-        help="Shared JSON file to append per-paper scores into.",
+    dim_results: dict[str, DimensionEntry] = dict(zip(DIMENSIONS, results))
+
+    logger.info("[scorer] reconciling 7 dimensions with judge (%s)…", _JUDGE_MODEL)
+    return await _run_judge(dim_results, truncated)
+
+
+# ─── Public API (unchanged signature) ──────────────────────────────────────────
+def score_paper(paper_md: str, summaries: dict, vendor: Any = None) -> DimensionScores:
+    """Score the paper on 7 dimensions via multi-agent orchestration.
+
+    `vendor` is accepted for backward compatibility with the pipeline call site but is
+    unused — this stage runs on Claude (Agent SDK) via ANTHROPIC_API_KEY.
+    """
+    logger.info(
+        "[scorer] multi-agent scoring: dims=%s judge=%s concurrency=%d",
+        _DIM_MODEL, _JUDGE_MODEL, _AGENT_CONCURRENCY,
     )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=None,
-        help="Concurrent workers (default: config.PIPELINE_WORKERS).",
-    )
-    parser.add_argument(
-        "--no-resume",
-        action="store_true",
-        help="Ignore existing entries in --output and re-score every paper.",
-    )
-    parser.add_argument("--deepseek-api-key", default=None, help="DeepSeek API key.")
-    args = parser.parse_args()
+    return asyncio.run(_score_paper_async(paper_md, summaries))
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    md_files = sorted(args.markdown_dir.rglob("*.md"))
-
-    if not md_files:
-        raise SystemExit(f"No .md files found under {args.markdown_dir}")
-
-    paper_mds = {p.stem: p.read_text(encoding="utf-8") for p in md_files}
-
-    client = OpenAI(
-        api_key=args.deepseek_api_key or config.DEEPSEEK_API_KEY,
-        base_url=config.DEEPSEEK_BASE_URL,
-    )
-
-    results = score_paper_batch(
-        paper_mds,
-        client=client,
-        output_path=args.output,
-        max_workers=args.workers,
-        resume=not args.no_resume,
-    )
-    print(f"Done. {len(results)} papers in {args.output}.")
+if __name__ == "__main__":  # pragma: no cover — manual smoke test
+    logging.basicConfig(level=logging.INFO)
+    path = sys.argv[1] if len(sys.argv) > 1 else "review_pipeline/test_files/505.md"
+    md = Path(path).read_text(encoding="utf-8")
+    out = score_paper(md, {})
+    print(json.dumps(out, indent=2, ensure_ascii=False))

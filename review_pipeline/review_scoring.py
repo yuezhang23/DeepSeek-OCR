@@ -25,7 +25,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from review_pipeline import config
-from review_pipeline.clients import deepseek_chat, get_tool_call
+from review_pipeline.clients import build_llm_client, get_tool_call, llm_chat
 from review_pipeline.scorer import DIMENSION_LABELS, DimensionScores
 from review_pipeline.tools import DIMENSIONS, SCORE_TOOL as _SCORE_TOOL
 
@@ -127,7 +127,7 @@ def align_reviews_to_dimensions(
         "Write each dimension's `rationale` before its `score`."
     )
 
-    response = deepseek_chat(
+    response = llm_chat(
         client,
         system=system_content,
         user=user_message,
@@ -257,11 +257,11 @@ if __name__ == "__main__":
     out_dir = args.output_dir
     # out_path = out_dir / "map2metrics.json"
 
-    if not config.DEEPSEEK_API_KEY:
-        raise SystemExit("DEEPSEEK_API_KEY is not set (check your .env / environment).")
+    if not config.LLM_API_KEY:
+        raise SystemExit("No LLM API key set (set LLM_API_KEY or DEEPSEEK_API_KEY in your .env / environment).")
 
 
-    client = OpenAI(api_key=config.DEEPSEEK_API_KEY, base_url=config.DEEPSEEK_BASE_URL)
+    client = build_llm_client()
     all_results = align_all_papers(
         client,
         metadata_path=args.metadata,

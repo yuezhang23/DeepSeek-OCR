@@ -6,10 +6,7 @@ from __future__ import annotations
 import json
 from typing import TypedDict
 
-from openai import OpenAI
-
-from review_pipeline import config
-from review_pipeline.clients import deepseek_chat, get_tool_call
+from review_pipeline.clients import LLMVendor, get_tool_call
 from review_pipeline.summarizer import PaperSummary
 from review_pipeline.tools import REVIEW_TOOL as _REVIEW_TOOL
 
@@ -80,7 +77,7 @@ class ILCRReview(TypedDict):
 def generate_review(
     paper_markdown: str,
     summaries: dict[str, PaperSummary],
-    client: OpenAI,
+    vendor: LLMVendor,
     venue: str = "ICLR",
     year: int = 2026,
 ) -> tuple[ILCRReview, str]:
@@ -98,8 +95,7 @@ def generate_review(
         f"Use the submit_review tool."
     )
 
-    response = deepseek_chat(
-        client,
+    response = vendor.chat(
         system=system_content,
         user=user_message,
         max_tokens=4096,
