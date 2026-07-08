@@ -27,6 +27,14 @@ Two layers coexist:
   pipeline can skip OCR entirely by feeding it pre-converted `.md`/`.mmd` files, which is
   the common path during development on non-GPU machines.
 
+### Markdown input format (images)
+The paper markdown files have the **inserted images stripped out**, but each image's
+**original position is preserved as a placeholder** of the form `![](images/2_0.jpg)`. The
+number in the image filename matches the figure indexing in the text, and both the figure's
+in-text **citation and its explanatory caption/discussion are preserved** in the markdown.
+So a placeholder marks where a figure sits, but the actual image bytes are absent — any
+stage reasoning over a paper sees the surrounding text and caption, not the image itself.
+
 ## Running the pipeline
 
 All commands run from the **repo root** (the package is imported as `review_pipeline`):
@@ -80,20 +88,43 @@ deliberately thin and single-purpose:
 8. **Stage 9a — Review** (`reviewer.py`): final ICLR-style review with rating + confidence
    (label scales defined as `RATING_LABELS` / `CONFIDENCE_LABELS`), OR
    **Stage 9b — Scoring** (`scorer.py`): integer 1–10 on each of 7 `DIMENSIONS`.
-   Unlike every other stage, 9b does **not** run on the DeepSeek/`LLMVendor` path — it
-   is a **multi-agent orchestration on the Claude Agent SDK** (`claude-agent-sdk`): one
+   9b is a **multi-agent orchestration on the Claude Agent SDK** (`claude-agent-sdk`): one
    autonomous agent per dimension (each with the `paper-quality-rubric` skill, web
-   search, and an in-process MCP `submit_score` tool), run concurrently, then an Opus
-   "judge" agent reconciles cross-dimension inconsistencies and emits the merged
-   `DimensionScores`. A PreToolUse hook blocks any web search/fetch touching OpenReview
-   (and filesystem tools are disabled) so agents can't read the paper's human reviews;
-   `AskUserQuestion` is auto-resolved when no human answers. Models/concurrency are env
-   tunable (`SCORE_DIMENSION_MODEL` default `claude-sonnet-4-6`, `SCORE_JUDGE_MODEL`
-   default `claude-opus-4-8`, `SCORE_AGENT_CONCURRENCY` default 4); auth via
-   `ANTHROPIC_API_KEY`. The `score_paper(paper_md, summaries, vendor)` signature is
-   preserved (`vendor` is accepted but unused) so `main.py` is unchanged. The skill lives
+   search, and an in-process MCP `submit_score` tool), run concurrently, then their 7
+   `{rationale, score}` results are assembled directly into the merged `DimensionScores`
+   (no separate judge/reconciliation agent). A PreToolUse hook blocks any web search/fetch
+   touching OpenReview (and filesystem tools are disabled) so agents can't read the paper's
+   human reviews; `AskUserQuestion` is auto-resolved when no human answers.
+   **Vendor:** the orchestration always runs on the Agent SDK, but the model behind the
+   agents is vendor-routed and defaults to **DeepSeek** (not Anthropic). `SCORE_AGENT_VENDOR`
+   (default `deepseek`) selects it; `clients.agent_sdk_target()` maps the vendor to the model
+   + an env dict merged into `ClaudeAgentOptions.env` that points the SDK's Claude Code CLI at
+   that vendor's Anthropic-compatible endpoint (DeepSeek → `…/anthropic`, auth via
+   `DEEPSEEK_API_KEY`). `SCORE_AGENT_VENDOR=anthropic` runs Claude natively via
+   `ANTHROPIC_API_KEY`; `SCORE_AGENT_BASE_URL`/`SCORE_AGENT_API_KEY` drive any custom
+   Anthropic-compatible gateway. `SCORE_DIMENSION_MODEL` optionally overrides the model name.
+   Models/concurrency/cost are env tunable (`SCORE_AGENT_CONCURRENCY` default 4). Cost
+   controls (the SDK is conversational, so each turn re-bills accumulated context — these
+   bound spend): `SCORE_MAX_TURNS` (default 8), `SCORE_MAX_BUDGET_USD` (default 0.20, a hard
+   per-agent `--max-budget-usd` ceiling — only enforced on the Anthropic vendor, since the CLI
+   needs model pricing), `SCORE_EFFORT` (default `low`), and `SCORE_WEB_DIMENSIONS` (default
+   `originality,contextualization_relative_to_prior_work` — only these agents get
+   WebSearch/WebFetch; the other 5 score from paper text + related-work summaries only).
+   Per-paper total cost is logged as `[scorer] paper scored: $X total`. The skill lives
    at `.claude/skills/paper-quality-rubric/SKILL.md` (discovered via
    `setting_sources=["project"]`).
+   **Stage 9-prep — shared section prep** (`section_prep.py`): both scorer backends (`scorer.py`
+   on Claude and the alternative `scorer_deepseek.py` on DeepSeek/LangGraph) consume the same two
+   DeepSeek-derived artifacts — `paper_sections` (`paper_prep.build_paper_sections` splits the
+   markdown + summarizes each section) and `selections` (`section_control` picks raw/summary/omit
+   per section per dimension, learning unknown section types into `selection_strategy.md`).
+   `section_prep.prepare_paper_sections(paper_md, vendor, cache=…)` builds both and caches each as
+   its own stage (`paper_sections` / `section_selections`), so reruns and a switch between the two
+   backends reuse the work instead of re-spending DeepSeek calls. `section_control` is re-exported
+   from `scorer`/`scorer_deepseek` for backward compatibility but lives in `section_prep` (which
+   has no Claude dependency). Both backends expose
+   `score_paper(paper_sections, summaries, vendor, selections=None)` — `main.run_pipeline` passes
+   the cached `selections`; when omitted, `score_paper` computes them itself.
 
 Cross-cutting modules:
 - **`clients.py`** — the *only* place API clients are constructed. `PipelineClients.build()`
@@ -105,9 +136,9 @@ Cross-cutting modules:
   (`QUERY_TOOL`, `RELEVANCE_TOOL`, `PLAN_TOOL`, `REVIEW_TOOL`, `SCORE_TOOL`) plus the
   canonical `DIMENSIONS` list. Structured output on the DeepSeek/`LLMVendor` stages goes
   through these schemas. (Note: `scorer.py` no longer uses `SCORE_TOOL` — it moved to the
-  Claude Agent SDK with its own MCP `submit_score`/`submit_reconciled_scores` tools;
-  `SCORE_TOOL` is still used by the `review_scoring.py` eval script. `DIMENSIONS` remains
-  the single source of truth for both paths.)
+  Claude Agent SDK with its own MCP `submit_score` tool; `SCORE_TOOL` is still used by the
+  `review_scoring.py` eval script. `DIMENSIONS` remains the single source of truth for both
+  paths.)
 - **`config.py`** — all tunables and keys. Note the worker knobs are tuned to API rate
   limits: `TAVILY_SEARCH_WORKERS`, `SUMMARY_WORKERS` (per-paper), `PIPELINE_WORKERS`
   (papers in parallel — each paper ≈17 DeepSeek calls, so keep small).
@@ -166,4 +197,4 @@ git-ignored.
 - DeepSeek is the workhorse model (cheap, function-calling) and drives generation for every
   stage **except 9b**; Anthropic/Tavily clients exist in `PipelineClients`. Model names come
   from `config`. The one exception is dimensional scoring (Stage 9b, `scorer.py`), which runs
-  on the Claude Agent SDK (multi-agent + judge) via `ANTHROPIC_API_KEY` — see Stage 9b above.
+  on the Claude Agent SDK (multi-agent) via `ANTHROPIC_API_KEY` — see Stage 9b above.

@@ -4,6 +4,7 @@
 *.key
 
 # Large data / generated output dirs (review_pipeline)
+out/
 review_pipeline/out/
 review_pipeline/data/
 review_pipeline/test_files/

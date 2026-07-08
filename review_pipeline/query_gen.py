@@ -17,7 +17,6 @@ You will be given the full text of a research paper (converted from PDF to Markd
 Your task: analyze the paper and generate arXiv search queries to find the most relevant related work.
 """
 
-
 def generate_search_queries(
     paper_markdown: str,
     venue: str = "ICLR",
@@ -53,4 +52,3 @@ def generate_search_queries(
         + tool_input.get("problem_queries", [])
         + tool_input.get("technique_queries", [])
     )
-    # return response.choices[0].message.content.strip().split("\n")

@@ -11,6 +11,8 @@ _STAGE_FILES = {
     "ranked_papers": "ranked_papers.json",
     "summarization_plan": "summarization_plan.json",
     "summaries": "summaries.json",
+    "paper_sections": "paper_sections.json",
+    "section_selections": "section_selections.json",
     "review": "review.md",
     "dimension_scores": "dimension_scores.json",
 }

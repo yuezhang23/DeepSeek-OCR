@@ -21,6 +21,12 @@ DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.co
 # the vendor: DeepSeek, OpenAI, OpenRouter, Together, Groq, Fireworks, Mistral,
 # xAI, or a local server (vLLM, Ollama, LM Studio). Each falls back to the
 # legacy DEEPSEEK_* values so existing setups keep working unchanged.
+# Which SDK/protocol the (analysis-script) LLM calls use to reach the model:
+#   "openai"    — OpenAI-compatible Chat Completions (DeepSeek, OpenAI, vLLM, …)
+#   "anthropic" — native Anthropic Messages API (uses ANTHROPIC_API_KEY + CLAUDE_MODEL)
+# This is distinct from LLM_PROVIDER below, which only shapes reasoning params
+# within the OpenAI-compatible path.
+LLM_VENDOR: str = os.getenv("LLM_VENDOR", "openai").strip().lower()
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
 LLM_API_KEY: str = os.getenv("LLM_API_KEY", "") or DEEPSEEK_API_KEY
 LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "") or DEEPSEEK_BASE_URL
@@ -51,13 +57,20 @@ def apply_llm_overrides(
     base_url: str | None = None,
     model: str | None = None,
     thinking: str | None = None,
+    vendor: str | None = None,
+    anthropic_api_key: str | None = None,
 ) -> None:
     """Override the global default LLM settings at runtime (e.g. from CLI flags).
 
     Per-stage env overrides (LLM_<STAGE>_*) still take precedence over these
     globals — see llm_stage_settings(). Empty/None values are ignored.
+
+    ``vendor`` selects the SDK/protocol (``"openai"`` vs ``"anthropic"``) and
+    ``anthropic_api_key`` overrides the native-Claude key; the rest tune the
+    OpenAI-compatible path.
     """
     global LLM_PROVIDER, LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_THINKING
+    global LLM_VENDOR, ANTHROPIC_API_KEY
     if provider:
         LLM_PROVIDER = provider.strip().lower()
     if api_key:
@@ -68,6 +81,10 @@ def apply_llm_overrides(
         LLM_MODEL = model
     if thinking:
         LLM_THINKING = thinking.strip().lower()
+    if vendor:
+        LLM_VENDOR = vendor.strip().lower()
+    if anthropic_api_key:
+        ANTHROPIC_API_KEY = anthropic_api_key
 
 
 def llm_stage_settings(stage: str) -> dict[str, str]:

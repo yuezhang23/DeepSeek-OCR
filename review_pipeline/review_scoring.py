@@ -25,7 +25,13 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from review_pipeline import config
-from review_pipeline.clients import build_llm_client, get_tool_call, llm_chat
+from review_pipeline.clients import (
+    build_anthropic_client,
+    build_llm_client,
+    get_tool_call,
+    llm_chat,
+    setup_analysis_client,
+)
 from review_pipeline.scorer import DIMENSION_LABELS, DimensionScores
 from review_pipeline.tools import DIMENSIONS, SCORE_TOOL as _SCORE_TOOL
 
@@ -94,10 +100,62 @@ def _format_reviews(official_values: Iterable[dict]) -> str:
     return "\n\n".join(blocks)
 
 
+# ─── Native Anthropic path (LLM_VENDOR=anthropic) ─────────────────────────────
+# Reuse the OpenAI-style SCORE_TOOL as the single source of truth for the
+# dimension schema; convert it to Anthropic's tool shape on the fly so the
+# returned DimensionScores object is byte-identical to the OpenAI path.
+_anthropic_client: "anthropic.Anthropic | None" = None  # type: ignore[name-defined]
+_anthropic_lock = threading.Lock()
+
+
+def _get_anthropic_client():
+    """Lazily build and reuse one thread-safe Anthropic client for the run."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        with _anthropic_lock:
+            if _anthropic_client is None:
+                _anthropic_client = build_anthropic_client()
+    return _anthropic_client
+
+
+def _anthropic_tool_from_openai(openai_tool: dict) -> dict:
+    """Convert an OpenAI function-tool schema to the Anthropic Messages format."""
+    fn = openai_tool["function"]
+    return {
+        "name": fn["name"],
+        "description": fn["description"],
+        "input_schema": fn["parameters"],
+    }
+
+
+def _align_via_anthropic(system_content: str, user_message: str) -> DimensionScores:
+    """Run the alignment call against the native Anthropic Messages API.
+
+    Forces the `submit_dimension_scores` tool so the model must return the
+    structured per-dimension {rationale, score} object.
+    """
+    client = _get_anthropic_client()
+    tool = _anthropic_tool_from_openai(_SCORE_TOOL)
+    response = client.messages.create(
+        model=config.CLAUDE_MODEL,
+        max_tokens=8192,
+        system=system_content,
+        messages=[{"role": "user", "content": user_message}],
+        tools=[tool],
+        tool_choice={"type": "tool", "name": tool["name"]},
+    )
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use" and block.name == tool["name"]:
+            return block.input  # type: ignore[return-value]  # already a dict
+    raise ValueError(
+        "Anthropic response contained no submit_dimension_scores tool call."
+    )
+
+
 # ─── Public API ───────────────────────────────────────────────────────────────
 def align_reviews_to_dimensions(
     official_values: list[dict],
-    client: OpenAI,
+    client: OpenAI | None,
     paper_title: str | None = None,
 ) -> DimensionScores:
     """Map the real reviewer comments for a single paper onto the 7 dimensions.
@@ -127,6 +185,12 @@ def align_reviews_to_dimensions(
         "Write each dimension's `rationale` before its `score`."
     )
 
+    vendor = (config.LLM_VENDOR or "openai").strip().lower()
+    if vendor == "anthropic":
+        # Native Anthropic Messages API (Claude); ignores the OpenAI `client`.
+        return _align_via_anthropic(system_content, user_message)
+
+    # Default: OpenAI-compatible Chat Completions path (DeepSeek, OpenAI, …).
     response = llm_chat(
         client,
         system=system_content,
@@ -175,7 +239,7 @@ def _flush_results(out_path: Path, results: dict[str, DimensionScores]) -> None:
 
 
 def align_all_papers(
-    client: OpenAI,
+    client: OpenAI | None,
     metadata_path: Path = _METADATA_PATH,
     limit: int | None = None,
     out_path: Path | None = None,
@@ -191,7 +255,8 @@ def align_all_papers(
     computed results are loaded and those papers are skipped.
     """
     meta = json.loads(metadata_path.read_text(encoding="utf-8"))
-    entries = meta if limit is None else meta[:limit]
+    # entries = meta if limit is None else meta[:limit]
+    entries = meta[200:]
 
     results: dict[str, DimensionScores] = {}
     if out_path is not None and resume and out_path.exists():
@@ -249,24 +314,33 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=None, help="Max number of papers to process.")
     parser.add_argument("--batch-size", type=int, default=8, help="Concurrent LLM requests.")
     parser.add_argument("--output_dir", type=Path, default=Path(__file__).parent / "out", help="Directory to write results.")
+    parser.add_argument("--api", type=str, default=None, help="LLM API key (overrides environment variable).")
+    parser.add_argument(
+        "--vendor", type=str, default="deepseek",
+        help="LLM vendor: deepseek (default/backup), gpt/openai, or anthropic/claude.",
+    )
 
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     out_dir = args.output_dir
-    # out_path = out_dir / "map2metrics.json"
+    out_path = out_dir / "human_cl.json"
 
-    if not config.LLM_API_KEY:
-        raise SystemExit("No LLM API key set (set LLM_API_KEY or DEEPSEEK_API_KEY in your .env / environment).")
-
-
-    client = build_llm_client()
+    # Resolve --vendor/--api into a verified client; backup vendor is DeepSeek,
+    # switchable to gpt/openai or anthropic/claude. This also folds the choice
+    # into config so align_reviews_to_dimensions picks the right code path.
+    try:
+        client, kind = setup_analysis_client(vendor=args.vendor, api_key=args.api)
+    except (ValueError, RuntimeError) as exc:
+        raise SystemExit(str(exc))
+    if kind == "anthropic":
+        client = None  # the anthropic path builds its own client internally
     all_results = align_all_papers(
         client,
         metadata_path=args.metadata,
         limit=args.limit,
-        out_path=out_dir,
+        out_path=out_path,
         batch_size=args.batch_size,
     )
     print(f"Wrote {len(all_results)} results to {out_dir}")

@@ -14,6 +14,7 @@ local servers (vLLM, Ollama, LM Studio) all speak the same protocol.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -42,6 +43,203 @@ def build_llm_client(
         api_key=api_key or config.LLM_API_KEY,
         base_url=base_url or config.LLM_BASE_URL,
     )
+
+
+def build_anthropic_client(api_key: str | None = None) -> anthropic.Anthropic:
+    """Construct the native Anthropic SDK client (Messages API).
+
+    Used by the standalone analysis scripts when LLM_VENDOR=anthropic, so they
+    talk to Claude natively rather than through the OpenAI-compatible shim.
+    Falls back to config.ANTHROPIC_API_KEY.
+    """
+    return anthropic.Anthropic(api_key=api_key or config.ANTHROPIC_API_KEY)
+
+
+# ── Friendly --vendor presets (for standalone analysis scripts) ──────────────
+# Map a user-facing vendor name to how its client should be built. DeepSeek is
+# the default/backup; "gpt"/"openai" and "anthropic"/"claude" switch targets.
+#   kind     — "openai" (Chat Completions) or "anthropic" (native Messages API)
+#   provider — config.LLM_PROVIDER value (shapes reasoning params, openai path)
+#   base_url — default endpoint (openai path only)
+#   model    — default model when LLM_MODEL is left unset
+_VENDOR_PRESETS: dict[str, dict[str, str]] = {
+    "deepseek": {
+        "kind": "openai",
+        "provider": "deepseek",
+        "base_url": config.DEEPSEEK_BASE_URL,
+        "model": config.DEEPSEEK_MODEL,
+    },
+    "openai": {
+        "kind": "openai",
+        "provider": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-4o",
+    },
+    "anthropic": {
+        "kind": "anthropic",
+        "provider": "anthropic",
+        "base_url": "",
+        "model": config.CLAUDE_MODEL,
+    },
+}
+# Accepted --vendor aliases → canonical preset key.
+_VENDOR_ALIASES: dict[str, str] = {
+    "deepseek": "deepseek",
+    "openai": "openai",
+    "gpt": "openai",
+    "anthropic": "anthropic",
+    "claude": "anthropic",
+}
+
+
+def resolve_vendor(vendor: str | None) -> str:
+    """Map a --vendor value (or alias) to a canonical preset key.
+
+    Falls back to DeepSeek when unset. Raises ValueError on an unknown name so
+    a typo fails loudly instead of silently using the default.
+    """
+    name = (vendor or "deepseek").strip().lower()
+    if name not in _VENDOR_ALIASES:
+        raise ValueError(
+            f"Unknown vendor {vendor!r}. Choose one of: "
+            f"{', '.join(sorted(_VENDOR_ALIASES))}."
+        )
+    return _VENDOR_ALIASES[name]
+
+
+# ── Claude Agent SDK target (Stage 9b multi-agent scorer) ────────────────────
+# The Agent SDK runs the Claude Code CLI as a subprocess that speaks the Anthropic
+# Messages API. To drive the scorer with a non-Anthropic vendor we point the CLI at
+# that vendor's Anthropic-compatible endpoint via env vars merged into
+# ClaudeAgentOptions.env. DeepSeek is the default; "anthropic" runs Claude natively.
+def agent_sdk_target(vendor: str | None = None) -> tuple[str, dict[str, str]]:
+    """Resolve ``(model, env)`` for the Claude Agent SDK given a vendor name.
+
+    Returns the model to request and an env dict to merge into
+    ``ClaudeAgentOptions.env`` so the underlying Claude Code CLI talks to the chosen
+    vendor's Anthropic-compatible endpoint. DeepSeek is the default; ``"anthropic"``/
+    ``"claude"`` runs natively (empty env, native ``ANTHROPIC_API_KEY``).
+
+    Reads ``config.*`` at call time so runtime ``apply_llm_overrides`` is honored.
+    Any vendor with an Anthropic-compatible endpoint can be driven without code edits
+    via ``SCORE_AGENT_BASE_URL`` / ``SCORE_AGENT_API_KEY`` (override on top of the
+    resolved preset). Raises ``ValueError`` on an unknown vendor name.
+    """
+    name = (vendor or "deepseek").strip().lower()
+    name = {"claude": "anthropic", "gpt": "openai"}.get(name, name)
+
+    if name == "anthropic":
+        return config.CLAUDE_MODEL, {}
+
+    presets: dict[str, dict[str, str]] = {
+        "deepseek": {
+            "base_url": f"{config.DEEPSEEK_BASE_URL.rstrip('/')}/anthropic",
+            "api_key": config.DEEPSEEK_API_KEY,
+            # The Anthropic-compatible endpoint serves "deepseek-chat"/"deepseek-reasoner";
+            # config.DEEPSEEK_MODEL (used by the OpenAI chat path) may name a model that the
+            # Anthropic endpoint silently returns empty for, so use a known-good default here.
+            "model": os.getenv("DEEPSEEK_AGENT_MODEL", "deepseek-chat"),
+        },
+    }
+    preset = presets.get(name)
+    if preset is None and not os.getenv("SCORE_AGENT_BASE_URL"):
+        raise ValueError(
+            f"Unknown agent-SDK vendor {vendor!r}. Choose 'deepseek' or 'anthropic', "
+            "or set SCORE_AGENT_BASE_URL/SCORE_AGENT_API_KEY for a custom "
+            "Anthropic-compatible endpoint."
+        )
+    preset = preset or {"base_url": "", "api_key": config.LLM_API_KEY, "model": config.LLM_MODEL}
+
+    base_url = os.getenv("SCORE_AGENT_BASE_URL") or preset["base_url"]
+    api_key = os.getenv("SCORE_AGENT_API_KEY") or preset["api_key"]
+    model = preset["model"]
+
+    env = {
+        "ANTHROPIC_BASE_URL": base_url,
+        "ANTHROPIC_AUTH_TOKEN": api_key,
+        # Empty out any inherited native key so it can't override the vendor token,
+        # and mirror the model so CLI builds that read ANTHROPIC_MODEL agree with
+        # options.model.
+        "ANTHROPIC_API_KEY": "",
+        "ANTHROPIC_MODEL": model,
+    }
+    return model, env
+
+
+def setup_analysis_client(
+    vendor: str | None = None,
+    api_key: str | None = None,
+    verify: bool = True,
+) -> tuple[OpenAI | anthropic.Anthropic | None, str]:
+    """Resolve a (vendor, api_key) pair into a ready, optionally-verified client.
+
+    This is the single entry point the standalone analysis scripts use to honor
+    their --vendor / --api flags. It:
+      1. resolves the vendor (DeepSeek default; gpt/openai or anthropic/claude),
+      2. folds the choice into config (so config.LLM_VENDOR and the OpenAI-path
+         globals stay consistent for downstream llm_chat calls),
+      3. builds the matching client, and
+      4. if ``verify`` is set, makes one cheap, no-token call (models.list) to
+         confirm the key actually authenticates.
+
+    Returns ``(client, kind)`` where kind is ``"openai"`` or ``"anthropic"``.
+    For the anthropic kind the returned client is an ``anthropic.Anthropic``;
+    review_scoring's anthropic path builds its own client lazily, but returning
+    it here lets callers verify setup uniformly. Raises RuntimeError if no key
+    is available or verification fails.
+    """
+    key = resolve_vendor(vendor)
+    preset = _VENDOR_PRESETS[key]
+    kind = preset["kind"]
+
+    if kind == "anthropic":
+        config.apply_llm_overrides(vendor="anthropic", anthropic_api_key=api_key)
+        if not config.ANTHROPIC_API_KEY:
+            raise RuntimeError(
+                "vendor=anthropic but no API key (pass --api or set "
+                "ANTHROPIC_API_KEY in your .env / environment)."
+            )
+        client: OpenAI | anthropic.Anthropic = build_anthropic_client()
+    else:
+        # OpenAI-compatible path (DeepSeek default, or OpenAI/gpt).
+        config.apply_llm_overrides(
+            vendor="openai",
+            provider=preset["provider"],
+            api_key=api_key,
+            base_url=preset["base_url"],
+            model=preset["model"],
+        )
+        if not config.LLM_API_KEY:
+            raise RuntimeError(
+                f"vendor={key} but no API key (pass --api or set the relevant "
+                "key in your .env / environment)."
+            )
+        client = build_llm_client()
+
+    if verify:
+        verify_client(client, kind)
+    logger.info(
+        "LLM client ready: vendor=%s kind=%s model=%s%s",
+        key, kind,
+        config.CLAUDE_MODEL if kind == "anthropic" else config.LLM_MODEL,
+        "" if kind == "anthropic" else f" @ {config.LLM_BASE_URL}",
+    )
+    return client, kind
+
+
+def verify_client(client: OpenAI | anthropic.Anthropic, kind: str) -> None:
+    """Confirm a built client authenticates, via one cheap models.list() call.
+
+    Both the OpenAI and Anthropic SDKs expose ``models.list()``, which costs no
+    tokens but exercises auth + connectivity. Re-raises as RuntimeError with a
+    clear message so a bad key surfaces at setup rather than mid-run.
+    """
+    try:
+        client.models.list()
+    except Exception as exc:  # auth error, bad base_url, network, …
+        raise RuntimeError(
+            f"{kind} client failed verification (models.list): {exc}"
+        ) from exc
 
 
 def _apply_thinking(kwargs: dict[str, Any], provider: str) -> None:

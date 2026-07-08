@@ -294,11 +294,8 @@ def run_pipeline(
 
     from review_pipeline import config
     from review_pipeline.clients import PipelineClients
-    from review_pipeline import query_gen, search, arxiv_client, relevance, summarizer, reviewer, scorer
+    from review_pipeline import query_gen, search, arxiv_client, relevance, summarizer, reviewer, scorer, section_prep
 
-    # Apply per-run LLM vendor overrides to the global default. Per-stage env
-    # vars (LLM_<STAGE>_*) still win, so individual stages can target their own
-    # OpenAI-compatible vendor regardless of these CLI defaults.
     config.apply_llm_overrides(
         provider=llm_provider,
         api_key=llm_api_key or deepseek_api_key,
@@ -437,33 +434,52 @@ def run_pipeline(
         print("\n[Stage 8/9] Summary cache hit.")
         summaries = cache.load("summaries")
 
-    # ── Stage 9a / 9b: Review or Dimensional Scoring (DeepSeek) ────────────────
+    # ── Stage 9a / 9b: Review or Dimensional Scoring ──────────────────────────
+    # 9a (review) runs on the DeepSeek/OpenAI-compatible vendor. 9b (scoring) runs the 7
+    # dimension agents + judge on CLAUDE via the Agent SDK (ANTHROPIC_API_KEY); the DeepSeek
+    # `vendor` it receives is used only for the section prep summaries + section_control.
     if score_dimensions:
+        # Stage 9-prep: build the two DeepSeek-derived artifacts both scorer backends need —
+        # `paper_sections` (split + per-section summaries) and `selections` (per-section,
+        # per-dimension raw/summary/omit plan from section_control). Both are cached (stages
+        # `paper_sections` / `section_selections`) by section_prep so a rerun or a switch
+        # between scorer backends reuses the work instead of re-spending DeepSeek calls.
+        print("\n[Stage 9-prep] Preparing paper sections + section-importance plan...")
+        paper_sections, selections = section_prep.prepare_paper_sections(
+            paper_md, vendor=clients.vendor("score"), cache=cache, force_rerun=force_rerun
+        )
+        print(f"  Prepared {len(paper_sections.get('sections', []))} sections")
+
         print("\n[Stage 9/9] Scoring paper on 7 quality dimensions...")
-        scores = scorer.score_paper(paper_md, summaries, vendor=clients.vendor("score"))
+        json_path = Path(output_path) if output_path else Path("out/ai_results.json")
+        # API-cost log sits next to the main score output (JSONL, one record per paper).
+        cost_log_path = json_path.with_name("ai_costs.jsonl")
+        scores = scorer.score_paper(
+            paper_sections, summaries, vendor=clients.vendor("score"),
+            selections=selections, cost_log_path=cost_log_path, paper_id=cache_key,
+        )
         cache.save("dimension_scores", scores)
         for dim in scorer.DIMENSIONS:
             print(f"  {scorer.DIMENSION_LABELS[dim]}: {scores[dim]['score']}/10")
-        json_path = Path(output_path) if output_path else Path("out/ai_results.json")
         _append_scores_json(json_path, cache_key, scores)
         return str(json_path)
+    else:
+        print(f"\n[Stage 9/9] Generating {venue} 2026 review...")
+        _, output_md = reviewer.generate_review(
+            paper_md, summaries, vendor=clients.vendor("review"), venue=venue, year=2026
+        )
+        cache.save("review", output_md)
 
-    print(f"\n[Stage 9/9] Generating {venue} 2026 review...")
-    _, output_md = reviewer.generate_review(
-        paper_md, summaries, vendor=clients.vendor("review"), venue=venue, year=2026
-    )
-    cache.save("review", output_md)
-
-    # output_path is the file path to save the final markdown review.
-    if output_path is not None:
-        import shutil
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        # Handle case where output_path exists as a directory
-        if output_path.is_dir():
-            shutil.rmtree(output_path)
-        output_path.write_text(output_md, encoding="utf-8")
-    return str(output_path)
+        # output_path is the file path to save the final markdown review.
+        if output_path is not None:
+            import shutil
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            # Handle case where output_path exists as a directory
+            if output_path.is_dir():
+                shutil.rmtree(output_path)
+            output_path.write_text(output_md, encoding="utf-8")
+        return str(output_path)
 
 
 def run_pipeline_batch(
